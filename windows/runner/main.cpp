@@ -69,11 +69,75 @@ void MonitorPrintJobStatus(DWORD jobId, HANDLE hPrinter, std::unique_ptr<flutter
     }
 }
 
-bool PrintFile(const std::string& filePath, const std::string& printerName, std::unique_ptr<flutter::MethodResult<>> result) {
-    // --- Create DC properly (avoid temporary wstring c_str() dangling) ---
+bool PrintFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, std::unique_ptr<flutter::MethodResult<>> result) {
+    HANDLE hPrinter = nullptr;
     std::wstring wprinter;
     wprinter.assign(printerName.begin(), printerName.end());
-    HDC hdc = CreateDCW(nullptr, wprinter.c_str(), nullptr, nullptr);
+
+    if (!OpenPrinterW(const_cast<LPWSTR>(wprinter.c_str()), &hPrinter, nullptr)) {
+        result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
+        OutputDebugStringA("Gagal membuka printer.\n");
+        return false;
+    }
+
+    // Mendapatkan ukuran DEVMODE default
+    DWORD devModeSize = DocumentPropertiesW(nullptr, hPrinter, const_cast<LPWSTR>(wprinter.c_str()), nullptr, nullptr, 0);
+    if (devModeSize <= 0) {
+        ClosePrinter(hPrinter);
+        result->Error("GET_DEVMODE_SIZE_FAILED", "Gagal mendapatkan ukuran DEVMODE.");
+        return false;
+    }
+
+    // Mengalokasikan memori untuk DEVMODE
+    PDEVMODE pDevMode = (PDEVMODE)GlobalAlloc(GPTR, devModeSize);
+    if (!pDevMode) {
+        ClosePrinter(hPrinter);
+        result->Error("ALLOC_DEVMODE_FAILED", "Gagal mengalokasikan memori untuk DEVMODE.");
+        return false;
+    }
+
+    // Mendapatkan DEVMODE default
+    if (DocumentPropertiesW(nullptr, hPrinter, const_cast<LPWSTR>(wprinter.c_str()), pDevMode, nullptr, DM_OUT_BUFFER) != IDOK) {
+        GlobalFree(pDevMode);
+        ClosePrinter(hPrinter);
+        result->Error("GET_DEVMODE_FAILED", "Gagal mendapatkan DEVMODE default.");
+        return false;
+    }
+
+    // Mengatur metadata cetak
+    pDevMode->dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR | DM_ORIENTATION;
+
+    // Set jumlah salinan
+    pDevMode->dmCopies = static_cast<short>(copies);
+
+    // Set cetak bolak-balik (duplex)
+    if (doubleSided) {
+        pDevMode->dmDuplex = DMDUP_HORIZONTAL; // Atau DMDUP_VERTICAL tergantung preferensi
+    }
+    else {
+        pDevMode->dmDuplex = DMDUP_SIMPLEX;
+    }
+
+    // Set warna/hitam-putih
+    if (color) {
+        pDevMode->dmColor = DMCOLOR_COLOR;
+    }
+    else {
+        pDevMode->dmColor = DMCOLOR_MONOCHROME;
+    }
+
+    // Set orientasi
+    if (pageOrientation == "portrait") {
+        pDevMode->dmOrientation = DMORIENT_PORTRAIT;
+    }
+    else {
+        pDevMode->dmOrientation = DMORIENT_LANDSCAPE;
+    }
+
+    HDC hdc = CreateDCW(nullptr, wprinter.c_str(), nullptr, pDevMode);
+    GlobalFree(pDevMode); // Bebaskan memori DEVMODE setelah CreateDCW
+    ClosePrinter(hPrinter); // Tutup handle printer
+
     if (!hdc) {
         result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
         OutputDebugStringA("Gagal mendapatkan Device Context untuk printer.\n");
@@ -82,7 +146,6 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
 
     // --- prepare Poppler (glib) ---
     GError* gerror = nullptr;
-    // Convert filename to file:// URI (handles spaces / special chars)
     gchar* uri = g_filename_to_uri(filePath.c_str(), nullptr, &gerror);
     if (!uri) {
         if (gerror) {
@@ -110,7 +173,6 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
         return false;
     }
 
-    // DOCINFO + StartDoc
     DOCINFO docInfo;
     ZeroMemory(&docInfo, sizeof(docInfo));
     docInfo.cbSize = sizeof(docInfo);
@@ -125,7 +187,25 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
 
     int num_pages = poppler_document_get_n_pages(doc);
 
-    for (int i = 0; i < num_pages; ++i) {
+    int start_index = pagesStart - 1;
+    int end_index;
+
+    if (pagesStart == pageEnd) {
+        end_index = num_pages;
+    }
+    else {
+        end_index = pageEnd - 1;
+    }
+
+    start_index = std::max(0, start_index);
+    end_index = std::min(num_pages, end_index);
+
+
+    for (int i = start_index; i < end_index; ++i) {
+        if (i < 0 || i >= num_pages) {
+            continue;
+        }
+
         PopplerPage* page = poppler_document_get_page(doc, i);
         if (!page) continue;
 
@@ -138,24 +218,19 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
             return false;
         }
 
-        // Ukuran halaman (biasanya dalam points)
         double width_points = 0.0, height_points = 0.0;
         poppler_page_get_size(page, &width_points, &height_points);
 
-        // Hitung skala (sama logika seperti yang kamu pakai)
         double scale_x = (double)GetDeviceCaps(hdc, PHYSICALWIDTH) / (width_points > 0 ? width_points : 1.0);
         double scale_y = (double)GetDeviceCaps(hdc, PHYSICALHEIGHT) / (height_points > 0 ? height_points : 1.0);
         double scale = std::min(scale_x, scale_y);
 
-        // Create printing surface + cairo context
         cairo_surface_t* surface = cairo_win32_printing_surface_create(hdc);
         cairo_t* cr = cairo_create(surface);
 
-        // apply scale
         cairo_save(cr);
         cairo_scale(cr, scale, scale);
 
-        // <-- THIS is the correct call for printing with poppler-glib -->
         poppler_page_render_for_printing(page, cr);
 
         cairo_restore(cr);
@@ -174,7 +249,6 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
         g_object_unref(page);
     }
 
-    // Selesai
     EndDoc(hdc);
     DeleteDC(hdc);
     g_object_unref(doc);
@@ -184,7 +258,6 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, std:
 }
 
 
-// Fungsi registrasi channel dan wWinMain tetap sama seperti sebelumnya
 void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
     OutputDebugStringA("Mendaftarkan Method Channel...\n");
     auto channel = std::make_unique<flutter::MethodChannel<>>(
@@ -200,10 +273,28 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                     if (args) {
                         const auto& file_path_val = args->find(flutter::EncodableValue("filePath"));
                         const auto& printer_name_val = args->find(flutter::EncodableValue("printerName"));
-                        if (file_path_val != args->end() && printer_name_val != args->end()) {
+                        const auto& color_val = args->find(flutter::EncodableValue("color"));
+                        const auto& double_sided_val = args->find(flutter::EncodableValue("doubleSided"));
+                        const auto& pages_start_val = args->find(flutter::EncodableValue("pagesStart"));
+                        const auto& page_end_val = args->find(flutter::EncodableValue("pageEnd"));
+                        const auto& copies_val = args->find(flutter::EncodableValue("copies"));
+                        const auto& orientation_val = args->find(flutter::EncodableValue("pageOrientation"));
+
+                        if (file_path_val != args->end() && printer_name_val != args->end() &&
+                            color_val != args->end() && double_sided_val != args->end() &&
+                            pages_start_val != args->end() && page_end_val != args->end() &&
+                            copies_val != args->end() && orientation_val != args->end()) {
+
                             std::string filePath = std::get<std::string>(file_path_val->second);
                             std::string printerName = std::get<std::string>(printer_name_val->second);
-                            PrintFile(filePath, printerName, std::move(result));
+                            bool color = std::get<bool>(color_val->second);
+                            bool doubleSided = std::get<bool>(double_sided_val->second);
+                            int pagesStart = std::get<int>(pages_start_val->second);
+                            int pageEnd = std::get<int>(page_end_val->second);
+                            int copies = std::get<int>(copies_val->second);
+                            std::string pageOrientation = std::get<std::string>(orientation_val->second);
+
+                            PrintFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, std::move(result));
                             return;
                         }
                     }

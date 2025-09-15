@@ -154,30 +154,58 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _isLoading = true;
     });
-    File? downloadedFile;
 
     try {
       List<PrintJob> jobs = await _printJobService.getPrintJobByCode(_pin);
 
       if (jobs.isNotEmpty) {
-        final job = jobs.first;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Downloading file...')),
+          SnackBar(content: Text('${jobs.length} print jobs found. Starting...')),
         );
 
-        downloadedFile = await _printJobService.downloadFile(
-          job.filename,
-          job.invoiceFilename,
-        );
+        for (int i = 0; i < jobs.length; i++) {
+          final job = jobs[i];
+          File? downloadedFile;
+
+          try {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Downloading file ${i + 1} of ${jobs.length}...')),
+            );
+
+            // Download file untuk pekerjaan saat ini
+            downloadedFile = await _printJobService.downloadFile(
+              job.filename,
+              job.invoiceFilename,
+            );
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${jobs.length}...')),
+            );
+
+            // Kirim ke native code dan tunggu sampai selesai
+            await _printFile(downloadedFile, job);
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Print job ${i + 1} sent successfully!')),
+            );
+          } catch (e) {
+            debugPrint("Error processing job ${i + 1}: $e");
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to process job ${i + 1}: ${e.toString()}')),
+            );
+            // Anda bisa memilih untuk continue ke pekerjaan berikutnya atau break
+            continue;
+          } finally {
+            // Hapus file sementara setelah setiap pekerjaan selesai atau gagal
+            if (downloadedFile != null && await downloadedFile.exists()) {
+              await downloadedFile.delete();
+              debugPrint("Temporary file deleted for job ${i + 1}.");
+            }
+          }
+        }
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Download complete. Printing...')),
-        );
-
-        await _printFile(downloadedFile);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Print job sent!')),
+          const SnackBar(content: Text('All print jobs processed!')),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -193,23 +221,13 @@ class _HomePageState extends State<HomePage> {
         Navigator.of(context).pushReplacementNamed('/login');
       }
     } finally {
-      if (downloadedFile != null && await downloadedFile.exists()) {
-        await downloadedFile.delete();
-        debugPrint("Temporary file deleted.");
-      }
       setState(() {
         _isLoading = false;
       });
     }
   }
 
-  Future<void> _printFile(File file) async {
-    // try {
-    //   final bytes = await file.readAsBytes();
-    //   await Printing.layoutPdf(onLayout: (format) async => bytes);
-    // } catch (e) {
-    //   debugPrint("Error printing file: $e");
-    // }
+  Future<void> _printFile(File file, PrintJob job) async {
 
     const platform = MethodChannel('com.hlaprint.app/printing');
     if (Platform.isWindows) {
@@ -230,24 +248,14 @@ class _HomePageState extends State<HomePage> {
           {
             'filePath': file.path,
             'printerName': printerName,
+            'color': job.color, // <--- Metadata ditambahkan
+            'doubleSided': job.doubleSided,
+            'pagesStart': job.pagesStart,
+            'pageEnd': job.pageEnd,
+            'copies': job.copies,
+            'pageOrientation': job.pageOrientation,
           },
         );
-        // Tangani hasil dari kode native
-        // if (result == 'success') {
-        //   ScaffoldMessenger.of(context).showSnackBar(
-        //     const SnackBar(
-        //       content: Text('Cetak berhasil!'),
-        //       backgroundColor: Colors.green,
-        //     ),
-        //   );
-        // } else {
-        //   ScaffoldMessenger.of(context).showSnackBar(
-        //     SnackBar(
-        //       content: Text('Gagal mencetak: $result'),
-        //       backgroundColor: Colors.red,
-        //     ),
-        //   );
-        // }
       } on PlatformException catch (e) {
         debugPrint("Failed to print: '${e.message}'.");
         ScaffoldMessenger.of(context).showSnackBar(
@@ -259,6 +267,7 @@ class _HomePageState extends State<HomePage> {
       }
     } else if (Platform.isMacOS) {
       try {
+        // Logika cetak macOS tidak diubah, hanya bagian Windows yang diperbaiki
         final result = await Process.run('lpr', [file.path]);
 
         if (result.exitCode == 0) {
