@@ -20,7 +20,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final List<TextEditingController> _pinControllers =
-      List.generate(4, (_) => TextEditingController());
+  List.generate(4, (_) => TextEditingController());
   final PrintJobService _printJobService = PrintJobService();
   bool _isLoading = false;
   String _pin = '';
@@ -92,12 +92,12 @@ class _HomePageState extends State<HomePage> {
             borderRadius: BorderRadius.circular(10),
           ),
           minimumSize:
-              isLarge ? const Size(double.infinity, 60) : const Size(90, 60),
+          isLarge ? const Size(double.infinity, 60) : const Size(90, 60),
           padding: const EdgeInsets.symmetric(vertical: 16),
           textStyle: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
         ),
         child:
-            text == '<' ? const Icon(Icons.arrow_back, size: 24, color: Colors.white) : Text(text),
+        text == '<' ? const Icon(Icons.arrow_back, size: 24, color: Colors.white) : Text(text),
       ),
     );
   }
@@ -148,6 +148,15 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  Future<void> _updatePrintJobStatus(int printJobId, String status) async {
+    try {
+      await _printJobService.updatePrintJobStatus(printJobId, status);
+      debugPrint("Status for job $printJobId updated to: $status");
+    } catch (e) {
+      debugPrint("Failed to update print job status for $printJobId: $e");
+    }
+  }
+
   Future<void> _submitPrintJob() async {
     if (_pin.length != 4) return;
 
@@ -163,6 +172,7 @@ class _HomePageState extends State<HomePage> {
           SnackBar(content: Text('${jobs.length} print jobs found. Starting...')),
         );
 
+        // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
         for (int i = 0; i < jobs.length; i++) {
           final job = jobs[i];
           File? downloadedFile;
@@ -193,7 +203,6 @@ class _HomePageState extends State<HomePage> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Failed to process job ${i + 1}: ${e.toString()}')),
             );
-            // Anda bisa memilih untuk continue ke pekerjaan berikutnya atau break
             continue;
           } finally {
             // Hapus file sementara setelah setiap pekerjaan selesai atau gagal
@@ -201,12 +210,16 @@ class _HomePageState extends State<HomePage> {
               await downloadedFile.delete();
               debugPrint("Temporary file deleted for job ${i + 1}.");
             }
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Print job ${i + 1} DONE!')),
+            );
           }
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('All print jobs processed!')),
         );
+
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No print jobs found.')),
@@ -223,12 +236,12 @@ class _HomePageState extends State<HomePage> {
     } finally {
       setState(() {
         _isLoading = false;
+        _pin = '';
       });
     }
   }
 
   Future<void> _printFile(File file, PrintJob job) async {
-
     const platform = MethodChannel('com.hlaprint.app/printing');
     if (Platform.isWindows) {
       try {
@@ -238,7 +251,7 @@ class _HomePageState extends State<HomePage> {
         if (printerName == null || printerName.isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Silakan ke Pengaturan, pilih default print.'),
+              content: Text('Please to setting, and set the default print.'),
             ),
           );
           return;
@@ -246,9 +259,10 @@ class _HomePageState extends State<HomePage> {
         final String result = await platform.invokeMethod(
           'printPDF',
           {
+            'printJobId': job.id,
             'filePath': file.path,
             'printerName': printerName,
-            'color': job.color, // <--- Metadata ditambahkan
+            'color': job.color,
             'doubleSided': job.doubleSided,
             'pagesStart': job.pagesStart,
             'pageEnd': job.pageEnd,
@@ -256,6 +270,32 @@ class _HomePageState extends State<HomePage> {
             'pageOrientation': job.pageOrientation,
           },
         );
+        if (result == 'success') {
+          await _updatePrintJobStatus(job.id, 'Completed');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Cetak berhasil!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else if (result == 'Sent To Printer') {
+          // Logika untuk status Sent To Printer
+          await _updatePrintJobStatus(job.id, 'Sent To Printer');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Pekerjaan cetak sudah dikirim ke printer.'),
+              backgroundColor: Colors.blue,
+            ),
+          );
+        } else {
+          await _updatePrintJobStatus(job.id, 'Failed');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Gagal mencetak: $result'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       } on PlatformException catch (e) {
         debugPrint("Failed to print: '${e.message}'.");
         ScaffoldMessenger.of(context).showSnackBar(

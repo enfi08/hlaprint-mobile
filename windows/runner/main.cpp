@@ -69,7 +69,7 @@ void MonitorPrintJobStatus(DWORD jobId, HANDLE hPrinter, std::unique_ptr<flutter
     }
 }
 
-bool PrintFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, std::unique_ptr<flutter::MethodResult<>> result) {
+bool PrintFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
     HANDLE hPrinter = nullptr;
     std::wstring wprinter;
     wprinter.assign(printerName.begin(), printerName.end());
@@ -104,46 +104,6 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
         return false;
     }
 
-    // Mengatur metadata cetak
-    pDevMode->dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR | DM_ORIENTATION;
-
-    // Set jumlah salinan
-    pDevMode->dmCopies = static_cast<short>(copies);
-
-    // Set cetak bolak-balik (duplex)
-    if (doubleSided) {
-        pDevMode->dmDuplex = DMDUP_HORIZONTAL; // Atau DMDUP_VERTICAL tergantung preferensi
-    }
-    else {
-        pDevMode->dmDuplex = DMDUP_SIMPLEX;
-    }
-
-    // Set warna/hitam-putih
-    if (color) {
-        pDevMode->dmColor = DMCOLOR_COLOR;
-    }
-    else {
-        pDevMode->dmColor = DMCOLOR_MONOCHROME;
-    }
-
-    // Set orientasi
-    if (pageOrientation == "portrait") {
-        pDevMode->dmOrientation = DMORIENT_PORTRAIT;
-    }
-    else {
-        pDevMode->dmOrientation = DMORIENT_LANDSCAPE;
-    }
-
-    HDC hdc = CreateDCW(nullptr, wprinter.c_str(), nullptr, pDevMode);
-    GlobalFree(pDevMode); // Bebaskan memori DEVMODE setelah CreateDCW
-    ClosePrinter(hPrinter); // Tutup handle printer
-
-    if (!hdc) {
-        result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
-        OutputDebugStringA("Gagal mendapatkan Device Context untuk printer.\n");
-        return false;
-    }
-
     // --- prepare Poppler (glib) ---
     GError* gerror = nullptr;
     gchar* uri = g_filename_to_uri(filePath.c_str(), nullptr, &gerror);
@@ -155,7 +115,8 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
         else {
             result->Error("FILE_URI_ERROR", "Gagal membentuk URI file.");
         }
-        DeleteDC(hdc);
+        GlobalFree(pDevMode);
+        ClosePrinter(hPrinter);
         return false;
     }
 
@@ -169,7 +130,85 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
         else {
             result->Error("POPPLER_LOAD_ERROR", "Gagal memuat dokumen PDF.");
         }
-        DeleteDC(hdc);
+        GlobalFree(pDevMode);
+        ClosePrinter(hPrinter);
+        return false;
+    }
+
+    std::string finalOrientation = pageOrientation;
+    if (pageOrientation == "auto") {
+        int num_pages = poppler_document_get_n_pages(doc);
+        if (num_pages > 0) {
+            PopplerPage* first_page = poppler_document_get_page(doc, 0);
+            double width_points = 0.0, height_points = 0.0;
+            poppler_page_get_size(first_page, &width_points, &height_points);
+            g_object_unref(first_page);
+
+            if (width_points > height_points) {
+                finalOrientation = "landscape";
+            }
+            else {
+                finalOrientation = "portrait";
+            }
+        }
+        else {
+            // Jika tidak ada halaman, gunakan default portrait
+            finalOrientation = "portrait";
+        }
+    }
+
+    // Mengatur metadata cetak
+    pDevMode->dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR | DM_ORIENTATION | DM_PRINTQUALITY | DM_YRESOLUTION | DM_PAPERSIZE;
+    pDevMode->dmPaperSize = DMPAPER_A4;
+
+    // Set kualitas cetak
+    pDevMode->dmPrintQuality = DMRES_HIGH;
+    pDevMode->dmYResolution = pDevMode->dmPrintQuality;
+
+    // Set jumlah salinan
+    pDevMode->dmCopies = static_cast<short>(copies);
+
+    // Set cetak bolak-balik (duplex)
+    if (doubleSided) {
+        if (finalOrientation == "portrait") {
+            pDevMode->dmDuplex = DMDUP_VERTICAL;
+        }
+        else {
+            pDevMode->dmDuplex = DMDUP_HORIZONTAL;
+        }
+    }
+    else {
+        pDevMode->dmDuplex = DMDUP_SIMPLEX;
+    }
+
+    // Set orientasi
+    if (finalOrientation == "portrait") {
+        pDevMode->dmOrientation = DMORIENT_PORTRAIT;
+    }
+    else {
+        pDevMode->dmOrientation = DMORIENT_LANDSCAPE;
+    }
+
+    // Set warna/hitam-putih
+    if (color) {
+        pDevMode->dmColor = DMCOLOR_COLOR;
+    }
+    else {
+        pDevMode->dmColor = DMCOLOR_MONOCHROME;
+    }
+
+    // Pastikan perubahan pada DEVMODE berhasil diterapkan
+    if (DocumentPropertiesW(nullptr, hPrinter, const_cast<LPWSTR>(wprinter.c_str()), pDevMode, pDevMode, DM_IN_BUFFER | DM_OUT_BUFFER) != IDOK) {
+        OutputDebugStringA("Gagal mengatur kualitas cetak tinggi. Melanjutkan dengan pengaturan default.\n");
+    }
+
+    HDC hdc = CreateDCW(nullptr, wprinter.c_str(), nullptr, pDevMode);
+    GlobalFree(pDevMode);
+
+    if (!hdc) {
+        ClosePrinter(hPrinter);
+        result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
+        OutputDebugStringA("Gagal mendapatkan Device Context untuk printer.\n");
         return false;
     }
 
@@ -178,15 +217,21 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
     docInfo.cbSize = sizeof(docInfo);
     docInfo.lpszDocName = L"Flutter Print Job";
 
-    if (StartDoc(hdc, &docInfo) == SP_ERROR) {
+    DWORD jobId = StartDoc(hdc, &docInfo);
+    if (jobId <= 0) {
         g_object_unref(doc);
         DeleteDC(hdc);
+        ClosePrinter(hPrinter);
         result->Error("START_DOC_FAILED", "Gagal memulai dokumen cetak.");
         return false;
     }
 
+    // Kirim respons awal ke Flutter bahwa pekerjaan sudah dikirim ke printer
+    result->Success(flutter::EncodableValue("Sent To Printer"));
+
     int num_pages = poppler_document_get_n_pages(doc);
 
+    // Logika untuk menentukan rentang halaman yang akan dicetak
     int start_index = pagesStart - 1;
     int end_index;
 
@@ -214,6 +259,7 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
             EndDoc(hdc);
             g_object_unref(doc);
             DeleteDC(hdc);
+            ClosePrinter(hPrinter);
             result->Error("START_PAGE_FAILED", "Gagal memulai halaman cetak.");
             return false;
         }
@@ -242,6 +288,7 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
             EndDoc(hdc);
             g_object_unref(doc);
             DeleteDC(hdc);
+            ClosePrinter(hPrinter);
             result->Error("END_PAGE_FAILED", "Gagal mengakhiri halaman cetak.");
             return false;
         }
@@ -253,6 +300,52 @@ bool PrintFile(const std::string& filePath, const std::string& printerName, bool
     DeleteDC(hdc);
     g_object_unref(doc);
 
+    // --- LOGIKA MENUNGGU CETAKAN SELESAI ---
+    OutputDebugStringA("Pekerjaan cetak dikirim. Memantau status...\n");
+    DWORD level = 2;
+    LPBYTE pJobInfo = NULL;
+    DWORD bytesNeeded = 0;
+
+    while (true) {
+        GetJob(hPrinter, jobId, level, pJobInfo, bytesNeeded, &bytesNeeded);
+
+        if (bytesNeeded == 0) {
+            OutputDebugStringA("Pekerjaan cetak tidak ditemukan. Dianggap selesai.\n");
+            break;
+        }
+
+        pJobInfo = new BYTE[bytesNeeded];
+
+        if (GetJob(hPrinter, jobId, level, pJobInfo, bytesNeeded, &bytesNeeded)) {
+            JOB_INFO_2* jobInfo = reinterpret_cast<JOB_INFO_2*>(pJobInfo);
+
+            if (jobInfo->Status & JOB_STATUS_PRINTING) {
+                OutputDebugStringA("Status: Sedang mencetak. Menunggu...\n");
+                delete[] pJobInfo;
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            else if (jobInfo->Status & (JOB_STATUS_ERROR | JOB_STATUS_PAPEROUT | JOB_STATUS_OFFLINE)) {
+                OutputDebugStringA("Status: Gagal mencetak. Mengirim status error ke Dart.\n");
+                std::string status = "Gagal mencetak. Status: " + std::to_string(jobInfo->Status);
+                delete[] pJobInfo;
+                ClosePrinter(hPrinter);
+                result->Error("PRINT_JOB_FAILED", status);
+                return false;
+            }
+            else {
+                OutputDebugStringA("Status: Selesai. Mengakhiri pemantauan.\n");
+                delete[] pJobInfo;
+                break;
+            }
+        }
+        else {
+            OutputDebugStringA("Tidak bisa mendapatkan info pekerjaan. Mengakhiri pemantauan.\n");
+            if (pJobInfo) delete[] pJobInfo;
+            break;
+        }
+    }
+
+    ClosePrinter(hPrinter);
     result->Success(flutter::EncodableValue("success"));
     return true;
 }
@@ -279,11 +372,13 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                         const auto& page_end_val = args->find(flutter::EncodableValue("pageEnd"));
                         const auto& copies_val = args->find(flutter::EncodableValue("copies"));
                         const auto& orientation_val = args->find(flutter::EncodableValue("pageOrientation"));
+                        const auto& print_job_id_val = args->find(flutter::EncodableValue("printJobId"));
 
                         if (file_path_val != args->end() && printer_name_val != args->end() &&
                             color_val != args->end() && double_sided_val != args->end() &&
                             pages_start_val != args->end() && page_end_val != args->end() &&
-                            copies_val != args->end() && orientation_val != args->end()) {
+                            copies_val != args->end() && orientation_val != args->end() &&
+                            print_job_id_val != args->end()) {
 
                             std::string filePath = std::get<std::string>(file_path_val->second);
                             std::string printerName = std::get<std::string>(printer_name_val->second);
@@ -293,8 +388,9 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                             int pageEnd = std::get<int>(page_end_val->second);
                             int copies = std::get<int>(copies_val->second);
                             std::string pageOrientation = std::get<std::string>(orientation_val->second);
+                            int printJobId = std::get<int>(print_job_id_val->second);
 
-                            PrintFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, std::move(result));
+                            PrintFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, printJobId, std::move(result));
                             return;
                         }
                     }
@@ -302,7 +398,7 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                     result->Error("INVALID_ARGUMENTS", "File path or printer name not provided.");
                 }
                 else {
-                    OutputDebugStringA("Metode tidak diimplementasikan.\n");
+                    OutputDebugStringA("Metode tidak diimplementasikan.\\n");
                     result->NotImplemented();
                 }
         });

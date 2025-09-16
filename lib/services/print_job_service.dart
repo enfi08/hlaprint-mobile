@@ -4,6 +4,8 @@ import 'package:hlaprint/constants.dart';
 import 'package:hlaprint/models/print_job_model.dart';
 import 'package:hlaprint/services/auth_service.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class PrintJobService {
   final AuthService _authService = AuthService();
@@ -50,5 +52,26 @@ class PrintJobService {
     final savePath = '${dir.path}/$filename';
     await _dio.download(url, savePath);
     return File(savePath);
+  }
+
+  Future<void> updatePrintJobStatus(int printJobId, String status) async {
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/update-status'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode(<String, dynamic>{
+        'pass': '123qwe123.,',
+        'printJobId': printJobId.toString(),
+        'status': status,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['message'] ?? 'Failed to update print job status.');
+    }
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 class PrintJob {
+  final int id;
   final String filename;
   final bool color;
   final bool doubleSided;
@@ -15,6 +16,7 @@ class PrintJob {
   final String status;
 
   PrintJob({
+    required this.id,
     required this.filename,
     required this.color,
     required this.doubleSided,
@@ -31,6 +33,7 @@ class PrintJob {
 
   factory PrintJob.fromJson(Map<String, dynamic> json) {
     return PrintJob(
+      id: json['id'] as int,
       filename: json['filename'] as String,
       color: json['color'] as bool,
       doubleSided: json['double_sided'] as bool,
