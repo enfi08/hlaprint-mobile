@@ -69,7 +69,7 @@ void MonitorPrintJobStatus(DWORD jobId, HANDLE hPrinter, std::unique_ptr<flutter
     }
 }
 
-bool PrintFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
+bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
     HANDLE hPrinter = nullptr;
     std::wstring wprinter;
     wprinter.assign(printerName.begin(), printerName.end());
@@ -390,7 +390,7 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                             std::string pageOrientation = std::get<std::string>(orientation_val->second);
                             int printJobId = std::get<int>(print_job_id_val->second);
 
-                            PrintFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, printJobId, std::move(result));
+                            PrintPDFFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, printJobId, std::move(result));
                             return;
                         }
                     }

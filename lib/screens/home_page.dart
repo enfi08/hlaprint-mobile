@@ -6,9 +6,8 @@ import 'package:hlaprint/services/auth_service.dart';
 import 'package:hlaprint/services/print_job_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
-import 'package:pdf/pdf.dart';
-import 'package:printing/printing.dart';
-import 'package:pdf/widgets.dart' as pw;
+import 'package:hlaprint/constants.dart';
+import 'package:path/path.dart' as p;
 import 'dart:io';
 
 class HomePage extends StatefulWidget {
@@ -165,21 +164,23 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      List<PrintJob> jobs = await _printJobService.getPrintJobByCode(_pin);
+      PrintJobResponse response = await _printJobService.getPrintJobByCode(_pin);
 
-      if (jobs.isNotEmpty) {
+      if (response.printFiles.isNotEmpty) {
+        await _printInvoiceFromHtml(response);
+
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${jobs.length} print jobs found. Starting...')),
+          SnackBar(content: Text('${response.printFiles.length} print jobs found. Starting...')),
         );
 
         // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
-        for (int i = 0; i < jobs.length; i++) {
-          final job = jobs[i];
+        for (int i = 0; i < response.printFiles.length; i++) {
+          final job = response.printFiles[i];
           File? downloadedFile;
 
           try {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Downloading file ${i + 1} of ${jobs.length}...')),
+              SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
             );
 
             // Download file untuk pekerjaan saat ini
@@ -189,7 +190,7 @@ class _HomePageState extends State<HomePage> {
             );
 
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${jobs.length}...')),
+              SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
             );
 
             // Kirim ke native code dan tunggu sampai selesai
@@ -241,6 +242,149 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _printInvoiceFromHtml(PrintJobResponse jobResponse) async {
+    if (jobResponse.userRole != "online") {
+      for (final printJob in jobResponse.printFiles) {
+        String colorStatus;
+        if (printJob.color) {
+          colorStatus = 'color';
+        } else {
+          colorStatus = 'bw';
+        }
+
+        String invoiceUrl;
+        if (jobResponse.userRole == 'darkstore') {
+          invoiceUrl = '$baseUrl/PrintInvoicesNana/${jobResponse
+              .transactionId}/$colorStatus';
+        } else {
+          invoiceUrl =
+          '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
+        }
+
+        try {
+          final htmlContent = await _printJobService.fetchInvoiceHtml(
+              invoiceUrl);
+
+          final tempDir = await Directory.systemTemp.createTemp();
+          final inputHtml = File(p.join(tempDir.path, 'input.html'));
+          await inputHtml.writeAsString(htmlContent);
+
+          final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
+
+          final exePath = p.join(
+            Directory.current.path,
+            'wkhtmltopdf.exe',
+          );
+
+          final result = await Process.run(
+            exePath,
+            [inputHtml.path, outputPdf.path],
+          );
+          if (result.exitCode == 0) {
+            await _printInvoiceFile(outputPdf);
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Invoice printed!')),
+            );
+          } else {
+
+          }
+        } catch (e) {
+          debugPrint("Failed to print invoice: $e");
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to print invoice: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _printInvoiceFile(File file) async {
+    const platform = MethodChannel('com.hlaprint.app/printing');
+    if (Platform.isWindows) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final printerName = prefs.getString('printer_name');
+
+        if (printerName == null || printerName.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please to setting, and set the default print.'),
+            ),
+          );
+          return;
+        }
+
+        final result = await platform.invokeMethod(
+          'printPDF',
+          {
+            'filePath': file.path,
+            'printerName': printerName,
+            'printJobId': -1, // Dummy ID for invoice
+            'color': false,
+            'doubleSided': false,
+            'copies': 1,
+            'pagesStart': 1,
+            'pageEnd': 2,
+            'pageOrientation': 'auto',
+          },
+        );
+
+        if (result == 'success') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Invoice printed successfully.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else if (result == 'Sent To Printer') {
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to print invoice: $result'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } on PlatformException catch (e) {
+        debugPrint("Failed to print: '${e.message}'.");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Print Error: ${e.message}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } else if (Platform.isMacOS) {
+      try {
+        final result = await Process.run('lpr', [file.path]);
+        if (result.exitCode == 0) {
+          debugPrint('File berhasil dikirim ke printer.');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('File berhasil dikirim ke printer.'),
+            ),
+          );
+        } else {
+          debugPrint('Gagal mencetak file. Error: ${result.stderr}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Gagal mencetak file'),
+            ),
+          );
+          throw Exception('Failed to send print job to lpr: ${result.stderr}');
+        }
+      } catch (e) {
+        debugPrint("Error printing file: $e");
+        rethrow;
+      }
+    }
+  }
+
+
   Future<void> _printFile(File file, PrintJob job) async {
     const platform = MethodChannel('com.hlaprint.app/printing');
     if (Platform.isWindows) {
@@ -279,7 +423,6 @@ class _HomePageState extends State<HomePage> {
             ),
           );
         } else if (result == 'Sent To Printer') {
-          // Logika untuk status Sent To Printer
           await _updatePrintJobStatus(job.id, 'Sent To Printer');
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(

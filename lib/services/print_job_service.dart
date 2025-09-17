@@ -11,7 +11,7 @@ class PrintJobService {
   final AuthService _authService = AuthService();
   final Dio _dio = Dio();
 
-  Future<List<PrintJob>> getPrintJobByCode(String code) async {
+  Future<PrintJobResponse> getPrintJobByCode(String code) async {
     final token = await _authService.getToken();
     if (token == null) {
       throw Exception("Authentication token is missing.");
@@ -27,7 +27,7 @@ class PrintJobService {
       final response = await _dio.get(url, options: Options(headers: headers));
 
       if (response.statusCode == 200) {
-        return printJobsFromJson(response.toString());
+        return printJobResponseFromJson(response.toString());
       } else if (response.statusCode == 404) {
         throw Exception("Print job not found. Please check your 4-digits Code.");
       } else if (response.statusCode == 401) {
@@ -72,6 +72,16 @@ class PrintJobService {
     if (response.statusCode != 200) {
       final errorData = json.decode(response.body);
       throw Exception(errorData['message'] ?? 'Failed to update print job status.');
+    }
+  }
+
+  Future<String> fetchInvoiceHtml(String invoiceUrl) async {
+    final response = await http.get(Uri.parse(invoiceUrl));
+
+    if (response.statusCode == 200) {
+      return response.body;
+    } else {
+      throw Exception('Failed to fetch invoice HTML.');
     }
   }
 }

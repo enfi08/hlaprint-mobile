@@ -1,5 +1,26 @@
 import 'dart:convert';
 
+class PrintJobResponse {
+  final int transactionId;
+  final String userRole;
+  final List<PrintJob> printFiles;
+
+  PrintJobResponse({
+    required this.transactionId,
+    required this.userRole,
+    required this.printFiles,
+  });
+
+  factory PrintJobResponse.fromJson(Map<String, dynamic> json) {
+    return PrintJobResponse(
+      transactionId: json['transaction_id'] as int,
+      userRole: json['user_role'] as String,
+      printFiles: List<PrintJob>.from(
+          json['print_files'].map((x) => PrintJob.fromJson(x))),
+    );
+  }
+}
+
 class PrintJob {
   final int id;
   final String filename;
@@ -50,7 +71,7 @@ class PrintJob {
   }
 }
 
-List<PrintJob> printJobsFromJson(String str) {
+PrintJobResponse printJobResponseFromJson(String str) {
   final jsonData = json.decode(str);
-  return List<PrintJob>.from(jsonData['print_files'].map((x) => PrintJob.fromJson(x)));
+  return PrintJobResponse.fromJson(jsonData);
 }
