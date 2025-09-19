@@ -232,17 +232,24 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     int num_pages = poppler_document_get_n_pages(doc);
 
     // Logika untuk menentukan rentang halaman yang akan dicetak
-    int start_index = pagesStart - 1;
+    int start_index;
     int end_index;
 
-    if (pagesStart == pageEnd) {
+    // Periksa validitas masukan pengguna
+    if (pagesStart <= 0 || pageEnd <= 0 || pagesStart > pageEnd || pagesStart > num_pages) {
+        // Jika input tidak valid, cetak semua halaman
+        start_index = 0;
         end_index = num_pages;
+        OutputDebugStringA(("Masukan halaman tidak valid. Mencetak semua " + std::to_string(num_pages) + " halaman.\n").c_str());
     }
     else {
-        end_index = pageEnd - 1;
+        // Jika input valid, tentukan rentang yang diminta
+        start_index = pagesStart - 1;
+        end_index = pageEnd;
+        OutputDebugStringA(("Mencetak halaman dari " + std::to_string(pagesStart) + " sampai " + std::to_string(pageEnd) + ".\n").c_str());
     }
 
-    start_index = std::max(0, start_index);
+    // Pastikan rentang halaman tidak melebihi jumlah halaman total
     end_index = std::min(num_pages, end_index);
 
 

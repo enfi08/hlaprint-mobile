@@ -179,6 +179,8 @@ class _HomePageState extends State<HomePage> {
           File? downloadedFile;
 
           try {
+            await _updatePrintJobStatus(job.id, 'Processing');
+
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
             );
@@ -244,60 +246,61 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _printInvoiceFromHtml(PrintJobResponse jobResponse) async {
     if (jobResponse.userRole != "online") {
-      for (final printJob in jobResponse.printFiles) {
-        String colorStatus;
-        if (printJob.color) {
+      String colorStatus = '';
+      if (jobResponse.printFiles.length == 1) {
+        bool? color = jobResponse.printFiles.first.color;
+        if (color == true) {
           colorStatus = 'color';
-        } else {
+        } else if (color == false) {
           colorStatus = 'bw';
         }
+      }
 
-        String invoiceUrl;
-        if (jobResponse.userRole == 'darkstore') {
-          invoiceUrl = '$baseUrl/PrintInvoicesNana/${jobResponse
-              .transactionId}/$colorStatus';
-        } else {
-          invoiceUrl =
-          '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
-        }
+      String invoiceUrl;
+      if (jobResponse.userRole == 'darkstore') {
+        invoiceUrl = '$baseUrl/PrintInvoicesNana/${jobResponse
+            .transactionId}/$colorStatus';
+      } else {
+        invoiceUrl =
+        '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
+      }
 
-        try {
-          final htmlContent = await _printJobService.fetchInvoiceHtml(
-              invoiceUrl);
+      try {
+        final htmlContent = await _printJobService.fetchInvoiceHtml(
+            invoiceUrl);
 
-          final tempDir = await Directory.systemTemp.createTemp();
-          final inputHtml = File(p.join(tempDir.path, 'input.html'));
-          await inputHtml.writeAsString(htmlContent);
+        final tempDir = await Directory.systemTemp.createTemp();
+        final inputHtml = File(p.join(tempDir.path, 'input.html'));
+        await inputHtml.writeAsString(htmlContent);
 
-          final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
+        final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
 
-          final exePath = p.join(
-            Directory.current.path,
-            'wkhtmltopdf.exe',
-          );
+        final exePath = p.join(
+          Directory.current.path,
+          'wkhtmltopdf.exe',
+        );
 
-          final result = await Process.run(
-            exePath,
-            [inputHtml.path, outputPdf.path],
-          );
-          if (result.exitCode == 0) {
-            await _printInvoiceFile(outputPdf);
+        final result = await Process.run(
+          exePath,
+          [inputHtml.path, outputPdf.path],
+        );
+        if (result.exitCode == 0) {
+          await _printInvoiceFile(outputPdf);
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Invoice printed!')),
-            );
-          } else {
-
-          }
-        } catch (e) {
-          debugPrint("Failed to print invoice: $e");
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to print invoice: $e'),
-              backgroundColor: Colors.red,
-            ),
+            const SnackBar(content: Text('Invoice printed!')),
           );
+        } else {
+
         }
+      } catch (e) {
+        debugPrint("Failed to print invoice: $e");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to print invoice: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -415,7 +418,6 @@ class _HomePageState extends State<HomePage> {
           },
         );
         if (result == 'success') {
-          await _updatePrintJobStatus(job.id, 'Completed');
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Cetak berhasil!'),
@@ -431,7 +433,6 @@ class _HomePageState extends State<HomePage> {
             ),
           );
         } else {
-          await _updatePrintJobStatus(job.id, 'Failed');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Gagal mencetak: $result'),

@@ -24,7 +24,7 @@ class PrintJobResponse {
 class PrintJob {
   final int id;
   final String filename;
-  final bool color;
+  final bool? color;
   final bool doubleSided;
   final int pagesStart;
   final int pageEnd;
@@ -56,7 +56,7 @@ class PrintJob {
     return PrintJob(
       id: json['id'] as int,
       filename: json['filename'] as String,
-      color: json['color'] as bool,
+      color: json['color'] as bool?,
       doubleSided: json['double_sided'] as bool,
       pagesStart: json['pages_start'] as int,
       pageEnd: json['page_end'] as int,
