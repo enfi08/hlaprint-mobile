@@ -47,7 +47,7 @@ class _SettingsPageState extends State<SettingsPage> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('printer_name', _selectedPrinter!);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pengaturan printer berhasil disimpan!')),
+        const SnackBar(content: Text('Default Printer has been saved successfully!')),
       );
     }
   }
@@ -56,7 +56,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pengaturan Printer'),
+        title: const Text('Setting Default Printer'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -64,14 +64,14 @@ class _SettingsPageState extends State<SettingsPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'Pilih Printer:',
+              'Select Printer:',
               style: TextStyle(fontSize: 16),
             ),
             const SizedBox(height: 8),
             DropdownButton<String>(
               isExpanded: true,
               value: _selectedPrinter,
-              hint: const Text('Pilih printer'),
+              hint: const Text('Please select printer'),
               items: _printers.map<DropdownMenuItem<String>>((String value) {
                 return DropdownMenuItem<String>(
                   value: value,
@@ -87,7 +87,7 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: _selectedPrinter != null ? _savePrinterName : null,
-              child: const Text('Simpan'),
+              child: const Text('Save'),
             ),
           ],
         ),

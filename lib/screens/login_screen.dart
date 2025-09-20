@@ -48,36 +48,56 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: Text('Login'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            TextField(
-              controller: _emailController,
-              decoration: InputDecoration(
-                labelText: 'Email',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.emailAddress,
+      body: Center(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Mendeteksi ukuran layar. Jika lebar lebih dari 600, anggap sebagai layar besar.
+                bool isLargeScreen = constraints.maxWidth > 600;
+                // Mengatur lebar input field dan tombol.
+                // Jika layar besar, lebar akan setengah dari layar. Jika kecil, akan menyesuaikan secara default.
+                double fieldWidth = isLargeScreen ? constraints.maxWidth / 2 : constraints.maxWidth;
+
+                return SizedBox(
+                  width: isLargeScreen ? fieldWidth : null,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      TextField(
+                        controller: _emailController,
+                        decoration: InputDecoration(
+                          labelText: 'Email',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.emailAddress,
+                      ),
+                      SizedBox(height: 16.0),
+                      TextField(
+                        controller: _passwordController,
+                        decoration: InputDecoration(
+                          labelText: 'Password',
+                          border: OutlineInputBorder(),
+                        ),
+                        obscureText: true,
+                      ),
+                      SizedBox(height: 24.0),
+                      _isLoading
+                          ? CircularProgressIndicator()
+                          : SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _login,
+                          child: Text('Login'),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
-            SizedBox(height: 16.0),
-            TextField(
-              controller: _passwordController,
-              decoration: InputDecoration(
-                labelText: 'Password',
-                border: OutlineInputBorder(),
-              ),
-              obscureText: true,
-            ),
-            SizedBox(height: 24.0),
-            _isLoading
-                ? CircularProgressIndicator()
-                : ElevatedButton(
-              onPressed: _login,
-              child: Text('Login'),
-            ),
-          ],
+          ),
         ),
       ),
     );

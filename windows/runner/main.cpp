@@ -69,6 +69,41 @@ void MonitorPrintJobStatus(DWORD jobId, HANDLE hPrinter, std::unique_ptr<flutter
     }
 }
 
+void RenderPageBorderless(HDC hdc, PopplerPage* page) {
+    double width_points = 0.0, height_points = 0.0;
+    poppler_page_get_size(page, &width_points, &height_points);
+
+    // Ambil info kertas dari printer
+    int offsetX = GetDeviceCaps(hdc, PHYSICALOFFSETX);
+    int offsetY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
+    int physicalW = GetDeviceCaps(hdc, PHYSICALWIDTH);
+    int physicalH = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+
+    // Hitung skala supaya pas dengan ukuran fisik kertas penuh
+    double scale_x = (double)physicalW / (width_points > 0 ? width_points : 1.0);
+    double scale_y = (double)physicalH / (height_points > 0 ? height_points : 1.0);
+    double scale = std::min(scale_x, scale_y);
+
+    // Buat surface Cairo untuk rendering
+    cairo_surface_t* surface = cairo_win32_printing_surface_create(hdc);
+    cairo_t* cr = cairo_create(surface);
+
+    cairo_save(cr);
+
+    // Geser canvas agar margin hardware dikompensasi
+    cairo_translate(cr, -offsetX, -offsetY);
+
+    // Scale konten PDF ke ukuran fisik
+    cairo_scale(cr, scale, scale);
+
+    // Render halaman
+    poppler_page_render_for_printing(page, cr);
+
+    cairo_restore(cr);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+}
+
 bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
     HANDLE hPrinter = nullptr;
     std::wstring wprinter;
@@ -271,24 +306,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
             return false;
         }
 
-        double width_points = 0.0, height_points = 0.0;
-        poppler_page_get_size(page, &width_points, &height_points);
-
-        double scale_x = (double)GetDeviceCaps(hdc, PHYSICALWIDTH) / (width_points > 0 ? width_points : 1.0);
-        double scale_y = (double)GetDeviceCaps(hdc, PHYSICALHEIGHT) / (height_points > 0 ? height_points : 1.0);
-        double scale = std::min(scale_x, scale_y);
-
-        cairo_surface_t* surface = cairo_win32_printing_surface_create(hdc);
-        cairo_t* cr = cairo_create(surface);
-
-        cairo_save(cr);
-        cairo_scale(cr, scale, scale);
-
-        poppler_page_render_for_printing(page, cr);
-
-        cairo_restore(cr);
-        cairo_destroy(cr);
-        cairo_surface_destroy(surface);
+        RenderPageBorderless(hdc, page);
 
         if (EndPage(hdc) <= 0) {
             g_object_unref(page);
@@ -356,7 +374,6 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     result->Success(flutter::EncodableValue("success"));
     return true;
 }
-
 
 void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
     OutputDebugStringA("Mendaftarkan Method Channel...\n");

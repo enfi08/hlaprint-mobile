@@ -507,7 +507,7 @@ class _HomePageState extends State<HomePage> {
               minimumSize: const Size(double.infinity, 50),
             ),
             child: const Text(
-              'Submit',
+              'Print',
               style: TextStyle(color: Colors.white, fontSize: 18),
             ),
           ),
