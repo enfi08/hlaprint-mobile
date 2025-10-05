@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:hlaprint/colors.dart';
 import 'package:hlaprint/models/print_job_model.dart';
@@ -18,11 +20,13 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  static const platform = MethodChannel('com.hlaprint.app/printing');
   final List<TextEditingController> _pinControllers =
   List.generate(4, (_) => TextEditingController());
   final PrintJobService _printJobService = PrintJobService();
   bool _isLoading = false;
   String _pin = '';
+  String _printerStatus = '';
 
   @override
   void initState() {
@@ -30,6 +34,59 @@ class _HomePageState extends State<HomePage> {
     for (var controller in _pinControllers) {
       controller.addListener(_updatePin);
     }
+
+    platform.setMethodCallHandler((call) async {
+      if (call.method == "onPrinterStatus") {
+        setState(() {
+          _printerStatus = call.arguments; // "Online" / "Offline"
+          // ScaffoldMessenger.of(context).showSnackBar(
+          //   SnackBar(
+          //     content: Text('printer status: $_printerStatus')
+          //   ),
+          // );
+        });
+      } else if (call.method == "onPrintJobCompleted") {
+        setState(() {
+          final Map<Object?, Object?>? args = call.arguments;
+          if (args is Map) {
+            final int jobId = args['printJobId'] as int;
+            final int totalPages = args['totalPages'] as int;
+
+            if (jobId == -1 || jobId == -2) {
+              debugPrint('print job Invoice on Separator');
+              return;
+            }
+            int delaySeconds = 0;
+            if (totalPages > 0) {
+              delaySeconds = 15;
+              if (totalPages > 1) {
+                delaySeconds += (totalPages - 1) * 3;
+              }
+            }
+            debugPrint('Print job $jobId completed by OS. Starting delay for $totalPages pages.');
+            // ScaffoldMessenger.of(context).showSnackBar(
+            //   SnackBar(
+            //       content: Text(
+            //           'Print job $jobId completed by OS. Starting delay for $totalPages pages.')
+            //   ),
+            // );
+
+            // Menjalankan Timer untuk delay
+            Timer(Duration(seconds: delaySeconds), () async {
+              await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
+              debugPrint('Print job $jobId status set to Completed after $delaySeconds seconds.');
+              // ScaffoldMessenger.of(context).showSnackBar(
+              //   SnackBar(
+              //     content: Text('Print job $jobId status set to Completed after $delaySeconds seconds.'),
+              //     backgroundColor: Colors.green,
+              //   ),
+              // );
+            });
+          }
+        });
+      }
+    });
+
   }
 
   @override
@@ -147,17 +204,49 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _updatePrintJobStatus(int printJobId, String status) async {
+  Future<void> _updatePrintJobStatus(int printJobId, String newStatus, {required String currentStatus}) async {
+    // Defines the hierarchical order of statuses.
+    const statusOrder = ['Received', 'Processing', 'Sent To Printer', 'Completed'];
+
+    final newStatusIndex = statusOrder.indexOf(newStatus);
+    final currentStatusIndex = statusOrder.indexOf(currentStatus);
+
+    // Check for unknown statuses.
+    if (newStatusIndex == -1 || currentStatusIndex == -1) {
+      debugPrint("Warning: Attempting to update with an unknown status. Current: '$currentStatus', New: '$newStatus'. Allowing update.");
+    } else if (newStatusIndex <= currentStatusIndex) {
+      // This is the core logic: prevent updating to a status that is earlier in the hierarchy or the same.
+      debugPrint(
+          "Blocked status regression for job $printJobId: Cannot move from '$currentStatus' to '$newStatus'.");
+      return; // Stop the function to prevent the invalid update.
+    }
+
     try {
-      await _printJobService.updatePrintJobStatus(printJobId, status);
-      debugPrint("Status for job $printJobId updated to: $status");
+      await _printJobService.updatePrintJobStatus(printJobId, newStatus);
+      debugPrint("Status for job $printJobId successfully updated to: '$newStatus'");
     } catch (e) {
       debugPrint("Failed to update print job status for $printJobId: $e");
     }
   }
 
   Future<void> _submitPrintJob() async {
-    if (_pin.length != 4) return;
+    final prefs = await SharedPreferences.getInstance();
+    final userRole = prefs.getString(userRoleKey);
+    final bwPrinterName = prefs.getString(printerNameKey);
+    final colorPrinterName = prefs.getString(printerColorNameKey);
+
+    if (bwPrinterName == null || bwPrinterName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(userRole != null && userRole != 'darkstore'
+              ? 'Please to setting, and set the b/w printer'
+              : 'Please to setting, and set the default print.'),
+        ),
+      );
+      return;
+    }
+
+    // platform.invokeMethod("startMonitorPrinter", {"printerName": printerName}); return;
 
     setState(() {
       _isLoading = true;
@@ -166,20 +255,42 @@ class _HomePageState extends State<HomePage> {
     try {
       PrintJobResponse response = await _printJobService.getPrintJobByCode(_pin);
 
-      if (response.printFiles.isNotEmpty) {
-        await _printInvoiceFromHtml(response);
+      if (userRole != null && userRole != 'darkstore') {
+        final bool needsColorPrinter = response.printFiles.any((job) => job.color == true);
+        if (needsColorPrinter && (colorPrinterName == null || colorPrinterName.isEmpty)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please to setting, and set the color printer'),
+            ),
+          );
+          setState(() => _isLoading = false); // Hentikan loading
+          return; // Hentikan eksekusi
+        }
+      }
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${response.printFiles.length} print jobs found. Starting...')),
-        );
+      if (response.printFiles.isNotEmpty) {
+        if (response.isUseInvoice) {
+          String invoicePrinter = bwPrinterName;
+          if (userRole != null && userRole != 'darkstore' && response.printFiles.first.color == true) {
+            invoicePrinter = colorPrinterName!;
+          }
+          await _printInvoiceFromHtml(invoicePrinter, response);
+        }
 
         // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
         for (int i = 0; i < response.printFiles.length; i++) {
           final job = response.printFiles[i];
           File? downloadedFile;
 
+          String selectedPrinter;
+          if (userRole != null && userRole != 'darkstore' && job.color == true) {
+            selectedPrinter = colorPrinterName!;
+          } else {
+            selectedPrinter = bwPrinterName;
+          }
+
           try {
-            await _updatePrintJobStatus(job.id, 'Processing');
+            await _updatePrintJobStatus(job.id, 'Processing', currentStatus: job.status);
 
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
@@ -196,11 +307,7 @@ class _HomePageState extends State<HomePage> {
             );
 
             // Kirim ke native code dan tunggu sampai selesai
-            await _printFile(downloadedFile, job);
-
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Print job ${i + 1} sent successfully!')),
-            );
+            await _printFile(selectedPrinter, downloadedFile, job);
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -213,16 +320,12 @@ class _HomePageState extends State<HomePage> {
               await downloadedFile.delete();
               debugPrint("Temporary file deleted for job ${i + 1}.");
             }
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Print job ${i + 1} DONE!')),
-            );
           }
         }
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('All print jobs processed!')),
-        );
-
+        if (response.isUseSeparator) {
+          await _printSeparatorFromAsset(bwPrinterName);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No print jobs found.')),
@@ -244,11 +347,23 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printInvoiceFromHtml(PrintJobResponse jobResponse) async {
+  // Future<String> _checkPrinterStatus(String printerName) async {
+  //   try {
+  //     final String status = await platform.invokeMethod('getPrinterStatus', {
+  //       'printerName': printerName,
+  //     });
+  //     return status;
+  //   } on PlatformException catch (e) {
+  //     print('Gagal mendapatkan status printer: ${e.message}');
+  //     return 'Error: ${e.message}';
+  //   }
+  // }
+
+  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse) async {
     if (jobResponse.userRole != "online") {
       String colorStatus = '';
+      bool? color = jobResponse.printFiles.first.color;
       if (jobResponse.printFiles.length == 1) {
-        bool? color = jobResponse.printFiles.first.color;
         if (color == true) {
           colorStatus = 'color';
         } else if (color == false) {
@@ -258,8 +373,8 @@ class _HomePageState extends State<HomePage> {
 
       String invoiceUrl;
       if (jobResponse.userRole == 'darkstore') {
-        invoiceUrl = '$baseUrl/PrintInvoicesNana/${jobResponse
-            .transactionId}/$colorStatus';
+        invoiceUrl = '$baseUrl/PrintInvoicesNanaNew/${jobResponse
+            .transactionId}/${jobResponse.companyId}/$colorStatus';
       } else {
         invoiceUrl =
         '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
@@ -285,13 +400,7 @@ class _HomePageState extends State<HomePage> {
           [inputHtml.path, outputPdf.path],
         );
         if (result.exitCode == 0) {
-          await _printInvoiceFile(outputPdf);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Invoice printed!')),
-          );
-        } else {
-
+          await _printInvoiceFile(printerName, outputPdf, color);
         }
       } catch (e) {
         debugPrint("Failed to print invoice: $e");
@@ -305,29 +414,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printInvoiceFile(File file) async {
-    const platform = MethodChannel('com.hlaprint.app/printing');
+  Future<void> _printInvoiceFile(String printerName, File file, bool? color) async {
     if (Platform.isWindows) {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final printerName = prefs.getString('printer_name');
-
-        if (printerName == null || printerName.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Please to setting, and set the default print.'),
-            ),
-          );
-          return;
-        }
-
         final result = await platform.invokeMethod(
           'printPDF',
           {
             'filePath': file.path,
             'printerName': printerName,
             'printJobId': -1, // Dummy ID for invoice
-            'color': false,
+            'color': color ?? false,
             'doubleSided': false,
             'copies': 1,
             'pagesStart': 1,
@@ -387,22 +483,58 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _printSeparatorFromAsset(String printerName) async {
+    File? tempFile;
+    try {
+      final byteData = await rootBundle.load('assets/pdf/separator.pdf');
+      final tempDir = await Directory.systemTemp.createTemp();
+      tempFile = File(p.join(tempDir.path, 'separator.pdf'));
+      await tempFile.writeAsBytes(byteData.buffer.asUint8List(
+        byteData.offsetInBytes,
+        byteData.lengthInBytes,
+      ));
+      final result = await platform.invokeMethod(
+        'printPDF',
+        {
+          'filePath': tempFile.path,
+          'printerName': printerName,
+          'printJobId': -2, // Using a dummy ID for a separator print
+          'color': true,
+          'doubleSided': true,
+          'copies': 1,
+          'pagesStart': 1, // A value of 0 often signifies printing all pages
+          'pageEnd': 2,
+          'pageOrientation': 'auto',
+        },
+      );
+      if (result == 'success') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Separator page printed.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("An unexpected error occurred: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('An unexpected error occurred: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      // 4. Clean up by deleting the temporary file.
+      if (tempFile != null && await tempFile.exists()) {
+        await tempFile.delete();
+        debugPrint("Temporary separator file deleted.");
+      }
+    }
+  }
 
-  Future<void> _printFile(File file, PrintJob job) async {
-    const platform = MethodChannel('com.hlaprint.app/printing');
+  Future<void> _printFile(String printerName, File file, PrintJob job) async {
     if (Platform.isWindows) {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final printerName = prefs.getString('printer_name');
-
-        if (printerName == null || printerName.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Please to setting, and set the default print.'),
-            ),
-          );
-          return;
-        }
         final String result = await platform.invokeMethod(
           'printPDF',
           {
@@ -418,20 +550,10 @@ class _HomePageState extends State<HomePage> {
           },
         );
         if (result == 'success') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Cetak berhasil!'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          debugPrint('Cetak berhasil!');
         } else if (result == 'Sent To Printer') {
-          await _updatePrintJobStatus(job.id, 'Sent To Printer');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Pekerjaan cetak sudah dikirim ke printer.'),
-              backgroundColor: Colors.blue,
-            ),
-          );
+          await _updatePrintJobStatus(job.id, 'Sent To Printer', currentStatus: job.status);
+          debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(

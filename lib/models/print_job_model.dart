@@ -2,11 +2,17 @@ import 'dart:convert';
 
 class PrintJobResponse {
   final int transactionId;
+  final int companyId;
+  final bool isUseSeparator;
+  final bool isUseInvoice;
   final String userRole;
   final List<PrintJob> printFiles;
 
   PrintJobResponse({
     required this.transactionId,
+    required this.companyId,
+    required this.isUseSeparator,
+    required this.isUseInvoice,
     required this.userRole,
     required this.printFiles,
   });
@@ -14,6 +20,9 @@ class PrintJobResponse {
   factory PrintJobResponse.fromJson(Map<String, dynamic> json) {
     return PrintJobResponse(
       transactionId: json['transaction_id'] as int,
+      companyId: json['company_id'] as int,
+      isUseSeparator: json['isUseSeparator'] as bool,
+      isUseInvoice: json['isUseInvoice'] as bool,
       userRole: json['user_role'] as String,
       printFiles: List<PrintJob>.from(
           json['print_files'].map((x) => PrintJob.fromJson(x))),

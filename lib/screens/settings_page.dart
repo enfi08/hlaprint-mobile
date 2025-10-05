@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:hlaprint/constants.dart';
+import 'package:hlaprint/services/user_service.dart';
+import 'package:hlaprint/models/user_detail_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
 
 class SettingsPage extends StatefulWidget {
@@ -10,14 +14,53 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  String _appVersion = 'Loading...';
   String? _selectedPrinter;
+  String? _selectedColorPrinter;
   List<String> _printers = [];
+  String? _userRole;
+
+  final UserService _userService = UserService();
 
   @override
   void initState() {
     super.initState();
+    _loadUserRole();
     _loadPrinters();
     _loadSelectedPrinter();
+    _loadSelectedColorPrinter();
+    _fetchAndSaveUserRole();
+    _loadVersionInfo();
+  }
+
+  Future<void> _loadUserRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _userRole = prefs.getString(userRoleKey);
+      });
+    }
+  }
+
+  Future<void> _fetchAndSaveUserRole() async {
+    try {
+      final User user = await _userService.getUser();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(userRoleKey, user.role);
+
+      // Perbarui state jika role dari API berbeda dengan yang ada di SharedPreferences
+      if (mounted && user.role != _userRole) {
+        setState(() {
+          _userRole = user.role;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load user data: ${e.toString()}')),
+        );
+      }
+    }
   }
 
   Future<void> _loadPrinters() async {
@@ -26,10 +69,6 @@ class _SettingsPageState extends State<SettingsPage> {
       if (result.exitCode == 0) {
         setState(() {
           _printers = result.stdout.toString().split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-          // Jika tidak ada printer yang dipilih, atur pilihan default
-          if (_selectedPrinter == null && _printers.isNotEmpty) {
-            _selectedPrinter = _printers.first;
-          }
         });
       }
     }
@@ -38,22 +77,54 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadSelectedPrinter() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _selectedPrinter = prefs.getString('printer_name');
+      _selectedPrinter = prefs.getString(printerNameKey);
     });
   }
 
+  Future<void> _loadSelectedColorPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _selectedColorPrinter = prefs.getString(printerColorNameKey);
+      });
+    }
+  }
+
   Future<void> _savePrinterName() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool changesMade = false;
+
     if (_selectedPrinter != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('printer_name', _selectedPrinter!);
+      await prefs.setString(printerNameKey, _selectedPrinter!);
+      changesMade = true;
+    }
+
+    if (_userRole != 'darkstore' && _selectedColorPrinter != null) {
+      await prefs.setString(printerColorNameKey, _selectedColorPrinter!);
+      changesMade = true;
+    }
+
+    if (changesMade && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Default Printer has been saved successfully!')),
+        const SnackBar(
+            content: Text('Default Printer has been saved successfully!')),
       );
+    }
+  }
+
+  Future<void> _loadVersionInfo() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = 'Version ${packageInfo.version} (${packageInfo.buildNumber})';
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final bool showColorPrinterOption = _userRole != null && _userRole != 'darkstore';
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Setting Default Printer'),
@@ -63,32 +134,71 @@ class _SettingsPageState extends State<SettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Select Printer:',
-              style: TextStyle(fontSize: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    showColorPrinterOption ? 'B/W Printer:' : 'Select Printer:',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButton<String>(
+                    isExpanded: true,
+                    value: _selectedPrinter,
+                    hint: const Text('Please select printer'),
+                    items: _printers.map<DropdownMenuItem<String>>((String value) {
+                      return DropdownMenuItem<String>(
+                        value: value,
+                        child: Text(value),
+                      );
+                    }).toList(),
+                    onChanged: (String? newValue) {
+                      setState(() {
+                        _selectedPrinter = newValue;
+                      });
+                    },
+                  ),
+                  if (showColorPrinterOption) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Color Printer:',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButton<String>(
+                      isExpanded: true,
+                      value: _selectedColorPrinter,
+                      hint: const Text('Please select color printer'),
+                      items: _printers.map<DropdownMenuItem<String>>((String value) {
+                        return DropdownMenuItem<String>(
+                          value: value,
+                          child: Text(value),
+                        );
+                      }).toList(),
+                      onChanged: (String? newValue) {
+                        setState(() {
+                          _selectedColorPrinter = newValue;
+                        });
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _selectedPrinter != null ? _savePrinterName : null,
+                    child: const Text('Save'),
+                  ),
+
+                  const SizedBox(height: 20),
+                  Text(
+                    _appVersion,
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            DropdownButton<String>(
-              isExpanded: true,
-              value: _selectedPrinter,
-              hint: const Text('Please select printer'),
-              items: _printers.map<DropdownMenuItem<String>>((String value) {
-                return DropdownMenuItem<String>(
-                  value: value,
-                  child: Text(value),
-                );
-              }).toList(),
-              onChanged: (String? newValue) {
-                setState(() {
-                  _selectedPrinter = newValue;
-                });
-              },
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: _selectedPrinter != null ? _savePrinterName : null,
-              child: const Text('Save'),
-            ),
+
           ],
         ),
       ),
