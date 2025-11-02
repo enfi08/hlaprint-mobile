@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:hlaprint/constants.dart';
-import 'package:hlaprint/services/user_service.dart';
-import 'package:hlaprint/models/user_detail_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
@@ -20,8 +18,6 @@ class _SettingsPageState extends State<SettingsPage> {
   List<String> _printers = [];
   String? _userRole;
 
-  final UserService _userService = UserService();
-
   @override
   void initState() {
     super.initState();
@@ -29,7 +25,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadPrinters();
     _loadSelectedPrinter();
     _loadSelectedColorPrinter();
-    _fetchAndSaveUserRole();
     _loadVersionInfo();
   }
 
@@ -42,33 +37,16 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _fetchAndSaveUserRole() async {
-    try {
-      final User user = await _userService.getUser();
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(userRoleKey, user.role);
-
-      // Perbarui state jika role dari API berbeda dengan yang ada di SharedPreferences
-      if (mounted && user.role != _userRole) {
-        setState(() {
-          _userRole = user.role;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load user data: ${e.toString()}')),
-        );
-      }
-    }
-  }
-
   Future<void> _loadPrinters() async {
     if (Platform.isWindows) {
       final result = await Process.run('powershell', ['(Get-CimInstance Win32_Printer).Name']);
       if (result.exitCode == 0) {
         setState(() {
-          _printers = result.stdout.toString().split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+          final String output = result.stdout?.toString() ?? '';
+          _printers = output.split('\n')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
         });
       }
     }

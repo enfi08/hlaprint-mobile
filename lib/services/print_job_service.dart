@@ -5,6 +5,7 @@ import 'package:hlaprint/models/print_job_model.dart';
 import 'package:hlaprint/services/auth_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:sentry/sentry.dart';
 import 'dart:convert';
 
 class PrintJobService {
@@ -35,12 +36,17 @@ class PrintJobService {
       } else {
         throw Exception("Failed to load print job: ${response.statusCode}");
       }
-    } on DioException catch (e) {
+    } on DioException catch (e, s) {
       if (e.response != null) {
         if (e.response?.statusCode == 404) {
           throw Exception("Print job not found. Please check your 4-digits Code.");
         } else if (e.response?.statusCode == 401) {
           throw Exception("Unauthorized. Session expired.");
+        } else {
+          await Sentry.captureException(
+            e,
+            stackTrace: s,
+          );
         }
       }
       throw Exception("Failed to connect to the server: ${e.message}");

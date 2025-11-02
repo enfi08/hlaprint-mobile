@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:hlaprint/constants.dart';
+import 'package:sentry/sentry.dart';
 import 'package:hlaprint/models/user_model.dart';
 import 'package:hlaprint/services/auth_service.dart';
 import 'package:http/http.dart' as http;
@@ -26,7 +27,7 @@ class ApiService {
         final jsonResponse = jsonDecode(response.body);
         if (jsonResponse['status'] == 200) {
           User user = User.fromJson(jsonResponse);
-          await _authService.saveToken(user.token);
+          await _authService.save(user.token, user.userRole, user.shopId, user.isSkipCashier);
           return user;
         } else {
           throw Exception(jsonResponse['message']);
@@ -37,7 +38,11 @@ class ApiService {
       } else {
         throw Exception('Failed to login: ${response.statusCode}');
       }
-    } catch (e) {
+    } catch (e, s) {
+      await Sentry.captureException(
+        e,
+        stackTrace: s,
+      );
       throw Exception('Failed to connect to the server: $e');
     }
   }

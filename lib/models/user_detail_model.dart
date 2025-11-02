@@ -14,6 +14,7 @@ class User {
   final String shopId;
   final int isAdmin;
   final int companyId;
+  final bool isSkipCashier;
 
   User({
     required this.id,
@@ -25,6 +26,7 @@ class User {
     required this.shopId,
     required this.isAdmin,
     required this.companyId,
+    required this.isSkipCashier,
   });
 
   factory User.fromJson(Map<String, dynamic> json) => User(
@@ -37,6 +39,7 @@ class User {
     shopId: json["shop_id"],
     isAdmin: json["is_admin"],
     companyId: json["company_id"],
+    isSkipCashier: json["is_skip_cashier_flow"],
   );
 
   Map<String, dynamic> toJson() => {
@@ -49,5 +52,6 @@ class User {
     "shop_id": shopId,
     "is_admin": isAdmin,
     "company_id": companyId,
+    "is_skip_cashier_flow": isSkipCashier,
   };
 }
