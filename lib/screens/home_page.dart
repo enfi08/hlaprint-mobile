@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:hlaprint/colors.dart';
@@ -16,6 +17,9 @@ import 'package:flutter/services.dart';
 import 'package:hlaprint/constants.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:path/path.dart' as p;
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:io';
 
 import '../models/user_detail_model.dart';
@@ -113,6 +117,8 @@ class _HomePageState extends State<HomePage> {
 
     if (role != null && ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(role)) {
       _loadOrders(isRefresh: true);
+    } else {
+      _fetchAndSaveUserRole();
     }
   }
 
@@ -257,6 +263,11 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
+  }
+
+  Future<String> _getPrinterIP() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(ipPrinterKey) ?? "";
   }
 
   Future<void> _processCashApprove(int jobId, String jobCode) async {
@@ -453,10 +464,22 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _submitPrintJob() async {
     final prefs = await SharedPreferences.getInstance();
-    final bwPrinterName = prefs.getString(printerNameKey);
+    final bwPrinterName = prefs.getString(printerNameKey) ?? "";
     final colorPrinterName = prefs.getString(printerColorNameKey);
 
-    if (bwPrinterName == null || bwPrinterName.isEmpty) {
+    String ipPrinter = "";
+    if (Platform.isAndroid) {
+      ipPrinter = await _getPrinterIP();
+      if (ipPrinter.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please go to settings, and set the IP Printer.'),
+          ),
+        );
+        return;
+      }
+    }
+    if (Platform.isWindows && bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(_userRole != 'darkstore'
@@ -472,7 +495,7 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      PrintJobResponse response = await _printJobService.getPrintJobByCode(_pin);
+      PrintJobResponse response = await _printJobService.getPrintJobByCode(_pin, false);
 
       if (_userRole != 'darkstore') {
         final bool needsColorPrinter = response.printFiles.any((job) => job.color == true);
@@ -493,7 +516,7 @@ class _HomePageState extends State<HomePage> {
           if (_userRole != null && _userRole != 'darkstore' && response.printFiles.first.color == true) {
             invoicePrinter = colorPrinterName!;
           }
-          await _printInvoiceFromHtml(invoicePrinter, response);
+          await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter);
         }
 
         // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
@@ -517,18 +540,84 @@ class _HomePageState extends State<HomePage> {
               SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
             );
 
-            final String invoiceFilenameToDownload = Uri.parse(job.filename).pathSegments.last;
-            downloadedFile = await _printJobService.downloadFile(
-              job.filename,
-              invoiceFilenameToDownload,
-            );
+            final String filenameToDownload = Uri
+                .parse(job.filename)
+                .pathSegments
+                .last;
+            if (Platform.isAndroid && !isStaging) {
+              downloadedFile = await rasterizePdf(
+                job.filename,
+                filenameToDownload,
+                job.pagesStart,
+                job.pageEnd
+              );
+            } else {
+              downloadedFile = await _printJobService.downloadFile(
+                job.filename,
+                filenameToDownload,
+              );
+            }
 
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
             );
 
+            File fileToPrint = downloadedFile;
+            if (Platform.isWindows) {
+              File? processedFile;
+              // --- START: PRE-PROCESSING (GHOSTSCRIPT) ---
+              try {
+                final tempDir = await Directory.systemTemp.createTemp();
+                final processedFilePath = p.join(tempDir.path,
+                    'processed_${p.basename(downloadedFile.path)}');
+
+                final gsPath = p.join(
+                  Directory.current.path,
+                  'gswin64c.exe',
+                );
+
+                final gsFile = File(gsPath);
+                if (!await gsFile.exists()) {
+                  throw Exception(
+                      "Ghostscript not found at $gsPath. Bundling required.");
+                }
+
+                final args = [
+                  '-sDEVICE=pdfwrite',
+                  '-dNoOutputFonts',
+                  '-dPDFSETTINGS=/prepress',
+                  '-dCompatibilityLevel=1.4',
+                  '-dHaveTransparency=false',
+                  '-dNOPAUSE',
+                  '-dBATCH',
+                  '-dSAFER',
+                  '-sOutputFile=$processedFilePath',
+                  downloadedFile.path
+                ];
+
+                final result = await Process.run(gsPath, args);
+
+                if (result.exitCode == 0) {
+                  processedFile = File(processedFilePath);
+                  fileToPrint = processedFile;
+                  debugPrint(
+                      "File pre-processed successfully with Ghostscript.");
+                }
+              } catch (e, s) {
+                debugPrint("Error during Ghostscript pre-processing: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                        "Error during Ghostscript pre-processing: $e"),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                // await Sentry.captureException(e, stackTrace: s);
+              }
+              // --- END: PRE-PROCESSING (GHOSTSCRIPT) ---
+            }
             // Kirim ke native code dan tunggu sampai selesai
-            await _printFile(selectedPrinter, downloadedFile, job);
+            await _printFile(selectedPrinter, fileToPrint, job, ipPrinter);
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -545,7 +634,7 @@ class _HomePageState extends State<HomePage> {
         }
 
         if (response.isUseSeparator) {
-          await _printSeparatorFromAsset(bwPrinterName);
+          await _printSeparatorFromAsset(bwPrinterName, ipPrinter);
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -580,7 +669,7 @@ class _HomePageState extends State<HomePage> {
   //   }
   // }
 
-  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse) async {
+  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse, String ipPrinter) async {
     if (jobResponse.userRole != "online") {
       String colorStatus = '';
       bool? color = jobResponse.printFiles.first.color;
@@ -593,51 +682,219 @@ class _HomePageState extends State<HomePage> {
       }
 
       String invoiceUrl;
+      int pageOrientation = 3;
       if (jobResponse.userRole == 'darkstore') {
-        invoiceUrl = '$baseUrl/PrintInvoicesNanaNew/${jobResponse
+        String path = "PrintInvoicesNanaNew";
+        if (Platform.isAndroid) {
+          path = "PrintInvoicesNanaAndroid";
+        }
+        invoiceUrl = '$baseUrl/$path/${jobResponse
             .transactionId}/${jobResponse.companyId}/$colorStatus';
       } else {
+        pageOrientation = 4;
         invoiceUrl =
         '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
       }
 
-      try {
-        final htmlContent = await _printJobService.fetchInvoiceHtml(
-            invoiceUrl);
-
-        final tempDir = await Directory.systemTemp.createTemp();
-        final inputHtml = File(p.join(tempDir.path, 'input.html'));
-        await inputHtml.writeAsString(htmlContent);
-
-        final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
-
-        final exePath = p.join(
-          Directory.current.path,
-          'wkhtmltopdf.exe',
-        );
-
-        final result = await Process.run(
-          exePath,
-          [inputHtml.path, outputPdf.path],
-        );
-        if (result.exitCode == 0) {
-          await _printInvoiceFile(printerName, outputPdf, color);
-        }
-      } catch (e, s) {
-        await Sentry.captureException(
-          e,
-          stackTrace: s,
-        );
-        debugPrint("Failed to print invoice: $e");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to print invoice: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+      if (Platform.isWindows) {
+        await _printInvoiceForWindows(printerName, invoiceUrl, color);
+      } else if (Platform.isAndroid) {
+        debugPrint('invoice url: $invoiceUrl');
+        await _printInvoiceForAndroid(invoiceUrl, pageOrientation, ipPrinter);
       }
     }
   }
+
+  void _showSuccessDialog(String message) {
+    debugPrint('*** Attempting to show success dialog ***');
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Settings Saved'),
+          content: SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text(message),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('OK'),
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                debugPrint('Dialog closed.');
+              },
+            ),
+          ],
+        );
+      },
+    ).then((_) {
+      debugPrint('showDialog Future resolved (Dialog should have closed)');
+    });
+    debugPrint('*** showDialog call complete ***');
+  }
+
+  void _goToSettings() async {
+    debugPrint('--- _goToSettings STARTED ---');
+    final currentContext = context;
+    final result = await Navigator.push(
+      currentContext,
+      MaterialPageRoute(builder: (currentContext) => const SettingsPage()),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (result != null && result is String) {
+      _showSuccessDialog(result);
+    }
+  }
+
+  Widget _buildUserInfoHeader() {
+    final bool showDivider = _name.isNotEmpty || _email.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _name,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _email,
+                style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+              ),
+            ],
+          ),
+        ),
+        if (showDivider)
+          const Divider(height: 1, thickness: 1),
+      ],
+    );
+  }
+
+
+  Future<void> _printInvoiceForWindows(String printerName, String invoiceUrl, bool? color) async {
+    try {
+      final htmlContent = await _printJobService.fetchInvoiceHtml(
+          invoiceUrl);
+
+      final tempDir = await Directory.systemTemp.createTemp();
+      final inputHtml = File(p.join(tempDir.path, 'input.html'));
+      await inputHtml.writeAsString(htmlContent);
+
+      final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
+
+      final exePath = p.join(
+        Directory.current.path,
+        'wkhtmltopdf.exe',
+      );
+
+      final result = await Process.run(
+        exePath,
+        [inputHtml.path, outputPdf.path],
+      );
+      if (result.exitCode == 0) {
+        await _printInvoiceFile(printerName, outputPdf, color);
+      }
+    } catch (e, s) {
+      await Sentry.captureException(
+        e,
+        stackTrace: s,
+      );
+      debugPrint("Failed to print invoice: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to print invoice: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<Uint8List> fetchInvoicePdf(String url) async {
+    final response = await http.post(
+      Uri.parse("$baseUrl/api/generate-pdf"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"url": url}),
+    );
+
+    if (response.statusCode == 200) {
+      return response.bodyBytes;
+    } else {
+      throw Exception("PDF generation failed");
+    }
+  }
+
+  Future<File> rasterizePdf(String url, String filename, int pageStart, int pageEnd) async {
+    final response = await http.post(
+      Uri.parse("$baseUrl/api/rasterize-pdf"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({
+        "pdf_url": url,
+        "page_start": pageStart,
+        "page_end": pageEnd
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final dir = await getTemporaryDirectory();
+      final savePath = '${dir.path}/$filename';
+      final file = File(savePath);
+      await file.writeAsBytes(response.bodyBytes);
+
+      return file;
+    } else {
+      throw Exception("PDF generation failed");
+    }
+  }
+
+
+  Future<void> _printInvoiceForAndroid(String invoiceUrl, int pageOrientation, String ipPrinter) async {
+    try {
+      final bytes = await fetchInvoicePdf(invoiceUrl);
+
+      final dir = await getTemporaryDirectory();
+      final filePath = "${dir.path}/invoice_print.pdf";
+      final file = File(filePath);
+      await file.writeAsBytes(bytes);
+      final params = {
+        "filePath": filePath,
+        "orientation": pageOrientation,
+        "ip": ipPrinter,
+        "duplex": false,
+      };
+
+      String result = await platform.invokeMethod<String>(
+        "printInvoicePdf",
+        params,
+      ) ?? "error";
+
+      if (result == "success") {
+        print("✅ Invoice printed successfully");
+      } else {
+        print("❌ Print failed: $result");
+      }
+
+    } catch (e) {
+      print("❌ Error printing invoice: $e");
+    }
+  }
+
 
   Future<void> _printInvoiceFile(String printerName, File file, bool? color) async {
     if (Platform.isWindows) {
@@ -716,7 +973,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printSeparatorFromAsset(String printerName) async {
+  Future<void> _printSeparatorFromAsset(String printerName, String ipPrinter) async {
     File? tempFile;
     try {
       final byteData = await rootBundle.load('assets/pdf/separator.pdf');
@@ -726,26 +983,30 @@ class _HomePageState extends State<HomePage> {
         byteData.offsetInBytes,
         byteData.lengthInBytes,
       ));
-      final result = await platform.invokeMethod(
-        'printPDF',
-        {
-          'filePath': tempFile.path,
-          'printerName': printerName,
-          'printJobId': -2, // Using a dummy ID for a separator print
-          'color': true,
-          'doubleSided': true,
-          'copies': 1,
-          'pagesStart': 1, // A value of 0 often signifies printing all pages
-          'pageEnd': 2,
-          'pageOrientation': 'auto',
-        },
-      );
-      if (result == 'success') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Separator page printed.'),
-            backgroundColor: Colors.green,
-          ),
+      if (Platform.isWindows) {
+        await platform.invokeMethod(
+          'printPDF',
+          {
+            'filePath': tempFile.path,
+            'printerName': printerName,
+            'printJobId': -2, // Using a dummy ID for a separator print
+            'color': true,
+            'doubleSided': true,
+            'copies': 1,
+            'pagesStart': 1, // A value of 0 often signifies printing all pages
+            'pageEnd': 2,
+            'pageOrientation': 'auto',
+          },
+        );
+      } else if (Platform.isAndroid) {
+        await platform.invokeMethod(
+          'printInvoicePdf',
+          {
+            'filePath': tempFile.path,
+            "orientation": 3,
+            "ip": ipPrinter,
+            "duplex": true,
+          },
         );
       }
     } catch (e, s) {
@@ -769,7 +1030,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printFile(String printerName, File file, PrintJob job) async {
+  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter) async {
     if (Platform.isWindows) {
       try {
         final String result = await platform.invokeMethod(
@@ -789,12 +1050,13 @@ class _HomePageState extends State<HomePage> {
         if (result == 'success') {
           debugPrint('Cetak berhasil!');
         } else if (result == 'Sent To Printer') {
-          await _updatePrintJobStatus(job.id, 'Sent To Printer', currentStatus: job.status);
+          await _updatePrintJobStatus(
+              job.id, 'Sent To Printer', currentStatus: job.status);
           debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Gagal mencetak: $result'),
+              content: Text('Failed print: $result'),
               backgroundColor: Colors.red,
             ),
           );
@@ -808,6 +1070,39 @@ class _HomePageState extends State<HomePage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Print Error: ${e.message}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } else if (Platform.isAndroid) {
+      int pageOrientation;
+      if (job.pageOrientation == "auto") {
+        pageOrientation = -1;
+      } else {
+        pageOrientation = job.pageOrientation == "portrait" ? 3 : 4; // 3 = portrait, 4 = landscape
+      }
+      final params = {
+        "filePath": file.path,
+        "duplex": job.doubleSided,
+        "color": job.color == true ? "color" : "monochrome",
+        "orientation": pageOrientation,
+        "ip": ipPrinter,
+        "copies": job.copies ?? 1,
+      };
+      if (isStaging) {
+        params["pageStart"] = job.pagesStart;
+        params["pageEnd"] = job.pageEnd;
+      }
+      final String result = await platform.invokeMethod("printPDF", params);
+      if (result == "success") {
+        debugPrint('job id: ${job.id} | current status: ${job.status}');
+        await _updatePrintJobStatus(
+            job.id, 'Sent To Printer', currentStatus: job.status);
+      } else {
+        debugPrint('Failed print: $result');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed print: $result'),
             backgroundColor: Colors.red,
           ),
         );
@@ -975,16 +1270,6 @@ class _HomePageState extends State<HomePage> {
           }
         }
 
-        String formattedDate = '-';
-        if (job.createdAt != null) {
-          final DateTime dateTime = DateTime.parse(job.createdAt!);
-          final day = dateTime.day.toString().padLeft(2, '0');
-          final month = dateTime.month.toString().padLeft(2, '0');
-          final hour = dateTime.hour.toString().padLeft(2, '0');
-          final minute = dateTime.minute.toString().padLeft(2, '0');
-          formattedDate = '$day/$month $hour:$minute';
-        }
-
         return LayoutBuilder(
           builder: (context, constraints) {
             final isDesktop = constraints.maxWidth > 600;
@@ -1067,7 +1352,7 @@ class _HomePageState extends State<HomePage> {
                               children: [
                                 const Icon(Icons.schedule, size: 18, color: Colors.grey),
                                 const SizedBox(width: 8),
-                                Text(formattedDate),
+                                Text(_formatCreatedAt(job.createdAt)),
                               ],
                             ),
                           ],
@@ -1181,7 +1466,7 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           const Icon(Icons.schedule, size: 18, color: Colors.grey),
                           const SizedBox(width: 8),
-                          Text(formattedDate),
+                          Text(_formatCreatedAt(job.createdAt)),
                         ],
                       ),
                       const SizedBox(height: 16),
@@ -1211,6 +1496,25 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
+  }
+
+  String _formatCreatedAt(String? createdAt) {
+    String formattedDate = '-';
+
+    if (createdAt != null) {
+      try {
+        final DateTime dateTime = DateTime.parse(createdAt);
+        final day = dateTime.day.toString().padLeft(2, '0');
+        final month = dateTime.month.toString().padLeft(2, '0');
+        final hour = dateTime.hour.toString().padLeft(2, '0');
+        final minute = dateTime.minute.toString().padLeft(2, '0');
+        formattedDate = '$day/$month $hour:$minute';
+      } catch (e) {
+        formattedDate = '-';
+      }
+    }
+
+    return formattedDate;
   }
 
   void _handleButtonAction(PrintJob job, String buttonText) {
@@ -1244,7 +1548,7 @@ class _HomePageState extends State<HomePage> {
               throw Exception("Print code not found");
             }
 
-            final response = await _printJobService.getPrintJobByCode(job.code!);
+            final response = await _printJobService.getPrintJobByCode(job.code!, true);
             printJobResponse = response;
 
             setStateInDialog(() {
@@ -1326,16 +1630,39 @@ class _HomePageState extends State<HomePage> {
                           final file = printJobResponse!.printFiles[index];
                           final colorText = file.color == true ? 'Color' : 'B&W';
                           final doubleSideText = file.doubleSided ? 'Double' : 'Single';
-                          final pagesRange = '${file.pagesStart ?? '-'} - ${file.pageEnd ?? '-'}';
+                          final pagesRange = '${file.pagesStart} - ${file.pageEnd}';
+                          final priceText = file.price != null ? '${file.price} SAR' : '-';
 
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4.0),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('${index + 1}. File ID: ${file.id}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                Text('  Color: $colorText | Side: $doubleSideText | Pages: ${file.totalPages}'),
-                                Text('  Range: $pagesRange | Copies: ${file.copies ?? '-'}'),
+                                Text(
+                                  '${index + 1}. ID: #${file.invoiceNumber}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16.0,
+                                  ),
+                                ),
+                                const SizedBox(height: 4.0),
+                                Wrap(
+                                  spacing: 8.0,
+                                  runSpacing: 4.0,
+                                  children: [
+                                    _buildRichTextItem('Color:', colorText),
+                                    _buildRichTextItem('Side:', doubleSideText),
+                                    _buildRichTextItem('Pages:', '${file.totalPages}'),
+                                    _buildRichTextItem('Range:', pagesRange),
+                                    _buildRichTextItem('Copies:', '${file.copies ?? '-'}'),
+                                    _buildRichTextItem('Orientation:', file.pageOrientation ?? '-'),
+                                    _buildRichTextItem('Price:', priceText),
+                                    _buildRichTextItem('Count:', '${file.count ?? '-'}'),
+                                    _buildRichTextItem('Phone:', '${file.phone ?? '-'}'),
+                                    _buildRichTextItem('Trans. ID:', '${file.transactionId ?? '-'}'),
+                                    _buildRichTextItem('Created:', _formatCreatedAt(file.createdAt)),
+                                  ],
+                                ),
                               ],
                             ),
                           );
@@ -1394,6 +1721,33 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildRichTextItem(String label, String value) {
+   // if (value == '-') return const SizedBox.shrink();
+
+    return Padding(
+        padding: const EdgeInsets.only(right: 8.0),
+        child: RichText(
+          text: TextSpan(
+            style: const TextStyle(
+              fontSize: 14.0,
+              color: Colors.black,
+            ),
+            children: <TextSpan>[
+              // Label dalam bold
+              TextSpan(
+                text: '$label ',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              TextSpan(
+                text: '$value',
+              ),
+              const TextSpan(text: ' |'),
+            ],
+          ),
+        ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_userRole != null &&
@@ -1408,12 +1762,7 @@ class _HomePageState extends State<HomePage> {
             ),
             IconButton(
               icon: const Icon(Icons.settings),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const SettingsPage()),
-                );
-              },
+              onPressed: _goToSettings,
             ),
             IconButton(
               icon: const Icon(Icons.logout),
@@ -1468,12 +1817,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsPage()),
-              );
-            },
+            onPressed: _goToSettings,
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -1483,6 +1827,17 @@ class _HomePageState extends State<HomePage> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
+          final centeredKeypad = Expanded(
+            child: SingleChildScrollView(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 400),
+                  child: _buildKeypadSection(),
+                ),
+              ),
+            ),
+          );
+          final userHeader = _buildUserInfoHeader();
           if (constraints.maxWidth > 600) {
             return Row(
               children: [
@@ -1504,22 +1859,26 @@ class _HomePageState extends State<HomePage> {
                 const VerticalDivider(thickness: 1, width: 1),
                 Expanded(
                   flex: 1,
-                  child: SingleChildScrollView(
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 400),
-                        child: _buildKeypadSection(),
-                      ),
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      userHeader,
+                      const SizedBox(height: 16),
+                      centeredKeypad,
+                    ],
                   ),
                 ),
               ],
             );
           } else {
-            return Center(
-              child: SingleChildScrollView(
-                child: _buildKeypadSection(),
-              ),
+            // Tampilan Mobile/Small Screen
+            return Column( // Kolom untuk menumpuk Header di atas Keypad
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                userHeader, // Header di paling atas
+                const SizedBox(height: 16),
+                centeredKeypad, // Keypad mengambil sisa ruang dan terpusat
+              ],
             );
           }
         },

@@ -12,13 +12,14 @@ class PrintJobService {
   final AuthService _authService = AuthService();
   final Dio _dio = Dio();
 
-  Future<PrintJobResponse> getPrintJobByCode(String code) async {
+  Future<PrintJobResponse> getPrintJobByCode(String code, bool isWithDetail) async {
     final token = await _authService.getToken();
     if (token == null) {
       throw Exception("Authentication token is missing.");
     }
 
-    final url = '$baseUrl/api/printCode/$code';
+    final path = isWithDetail ? 'printCodeDetail' : 'printCode';
+    final url = '$baseUrl/api/$path/$code';
     final headers = {
       "Authorization": "Bearer $token",
       "Accept": "application/json",

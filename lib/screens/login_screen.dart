@@ -57,7 +57,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // Mendeteksi ukuran layar. Jika lebar lebih dari 600, anggap sebagai layar besar.
                 bool isLargeScreen = constraints.maxWidth > 600;
                 // Mengatur lebar input field dan tombol.
-                // Jika layar besar, lebar akan setengah dari layar. Jika kecil, akan menyesuaikan secara default.
                 double fieldWidth = isLargeScreen ? constraints.maxWidth / 2 : constraints.maxWidth;
 
                 return SizedBox(
@@ -65,6 +64,19 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: <Widget>[
+                      Image.asset(
+                        'assets/icon/icon.png',
+                        height: 150.0,
+                      ),
+                      SizedBox(height: 16.0),
+                      Text(
+                        'HlaPrint',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 32.0),
                       TextField(
                         controller: _emailController,
                         decoration: InputDecoration(

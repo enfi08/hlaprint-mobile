@@ -198,14 +198,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.0.0"
-  flutter_net_printer:
-    dependency: "direct dev"
-    description:
-      name: flutter_net_printer
-      sha256: "31236c0783f3ef3c5e39204836dea822760fdf2dc341479bd55f5cb322d6f575"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.4"
   flutter_plugin_android_lifecycle:
     dependency: transitive
     description:
@@ -248,14 +240,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.5.4"
-  js:
-    dependency: transitive
-    description:
-      name: js
-      sha256: f2c445dce49627136094980615a031419f7f3eb393237e4ecd97ac15dea343f3
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.6.7"
   json_annotation:
     dependency: transitive
     description:
@@ -296,6 +280,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.1.1"
+  logger:
+    dependency: transitive
+    description:
+      name: logger
+      sha256: a7967e31b703831a893bbc3c3dd11db08126fe5f369b5c648a36f821979f5be3
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.6.2"
   matcher:
     dependency: transitive
     description:
@@ -328,30 +320,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
-  network_info_plus:
-    dependency: transitive
-    description:
-      name: network_info_plus
-      sha256: "2866dadcbee2709e20d67737a1556f5675b8b0cdcf2c1659ba74bc21bffede4f"
-      url: "https://pub.dev"
-    source: hosted
-    version: "7.0.0"
-  network_info_plus_platform_interface:
-    dependency: transitive
-    description:
-      name: network_info_plus_platform_interface
-      sha256: "7e7496a8a9d8136859b8881affc613c4a21304afeb6c324bcefc4bd0aff6b94b"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.0.2"
-  nm:
-    dependency: transitive
-    description:
-      name: nm
-      sha256: "2c9aae4127bdc8993206464fcc063611e0e36e72018696cd9631023a31b24254"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.5.0"
   package_info_plus:
     dependency: "direct main"
     description:
@@ -440,14 +408,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.11.3"
-  pdf_render:
-    dependency: "direct dev"
-    description:
-      name: pdf_render
-      sha256: bacd2ad8f4f4c9821827003065f5c2f9ca474dd418ff29c68272aab4c0e1e88b
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.4.12"
   pdf_widget_wrapper:
     dependency: transitive
     description:
@@ -552,6 +512,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.2"
+  rename:
+    dependency: "direct dev"
+    description:
+      name: rename
+      sha256: da5f4d67f8c68f066ad04edfd6585495dbe595f2baf3b1999eb6af1805d79539
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.0"
   sentry:
     dependency: transitive
     description:
