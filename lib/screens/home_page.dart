@@ -479,7 +479,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
     }
-    if (Platform.isWindows && bwPrinterName.isEmpty) {
+    if ((Platform.isWindows || Platform.isMacOS) && bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(_userRole != 'darkstore'
@@ -544,7 +544,7 @@ class _HomePageState extends State<HomePage> {
                 .parse(job.filename)
                 .pathSegments
                 .last;
-            if (Platform.isAndroid && !isStaging) {
+            if ((Platform.isAndroid || Platform.isMacOS) && !isStaging) {
               downloadedFile = await rasterizePdf(
                 job.filename,
                 filenameToDownload,
@@ -698,6 +698,8 @@ class _HomePageState extends State<HomePage> {
 
       if (Platform.isWindows) {
         await _printInvoiceForWindows(printerName, invoiceUrl, color);
+      } else if (Platform.isMacOS) {
+        await _printInvoiceForMac(printerName, jobResponse.transactionId, jobResponse.companyId, colorStatus, jobResponse.userRole);
       } else if (Platform.isAndroid) {
         debugPrint('invoice url: $invoiceUrl');
         await _printInvoiceForAndroid(invoiceUrl, pageOrientation, ipPrinter);
@@ -826,7 +828,110 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _printInvoiceForMac(String printerName, int transId, int companyId, String color, String role) async {
+    try {
+      final path = role == 'darkstore' ? "macos-invoice-nana-pdf" : "macos-invoice-pdf";
+      final bytes = await generateInvoicePdf(path, transId, companyId, color);
+
+      final dir = await getTemporaryDirectory();
+      final filePath = "${dir.path}/invoice_print.pdf";
+      final file = File(filePath);
+      await file.writeAsBytes(bytes);
+
+      List<String> args = [];
+      args.add('-P');
+      args.add(printerName);
+
+      args.add('-o');
+      args.add('sides=one-sided');
+
+      args.add('-o');
+      args.add('ColorModel=Gray');
+
+      args.add('-o');
+      args.add('portrait');
+
+      args.add('-o');
+      args.add('fit-to-page');
+
+      args.add(file.path);
+
+      debugPrint("MacOS executing: lpr ${args.join(' ')}");
+
+      final result = await Process.run('lpr', args);
+
+      if (result.exitCode == 0) {
+        debugPrint('MacOS: Invoice berhasil dikirim ke printer.');
+      } else {
+        debugPrint('MacOS: Gagal mencetak file. Error: ${result.stderr}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to print invoice: ${result.stderr}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      print("❌ Error printing invoice: $e");
+    }
+  }
+
+  Future<Uint8List> generateInvoicePdf(String path, int transId, int companyId, String color) async {
+    debugPrint('generateInvoicePdf: $path | transId: $transId | companyId: $companyId | color: $color');
+    final response = await http.post(
+      Uri.parse("$baseUrl/api/$path"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({
+        "trans_id": transId,
+        "company_id": companyId,
+        "color": color
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return response.bodyBytes;
+    } else {
+      throw Exception("PDF generation failed");
+    }
+  }
+
+  Future<void> _printSeparatorForMac(String printerName, File file) async {
+    List<String> args = [];
+    args.add('-P');
+    args.add(printerName);
+    args.add('-o');
+    args.add('sides=two-sided-long-edge');
+
+    args.add('-o');
+    args.add('ColorModel=Gray');
+
+    args.add('-o');
+    args.add('portrait');
+
+    args.add('-o');
+    args.add('fit-to-page');
+
+    args.add(file.path);
+
+    debugPrint("MacOS executing: lpr ${args.join(' ')}");
+
+    final result = await Process.run('lpr', args);
+
+    if (result.exitCode == 0) {
+      debugPrint('MacOS: Invoice berhasil dikirim ke printer.');
+    } else {
+      debugPrint('MacOS: Gagal mencetak separator. Error: ${result.stderr}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to print separator: ${result.stderr}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
   Future<Uint8List> fetchInvoicePdf(String url) async {
+    debugPrint('fetchInvoicePdf: $url');
     final response = await http.post(
       Uri.parse("$baseUrl/api/generate-pdf"),
       headers: {"Content-Type": "application/json"},
@@ -897,79 +1002,50 @@ class _HomePageState extends State<HomePage> {
 
 
   Future<void> _printInvoiceFile(String printerName, File file, bool? color) async {
-    if (Platform.isWindows) {
-      try {
-        final result = await platform.invokeMethod(
-          'printPDF',
-          {
-            'filePath': file.path,
-            'printerName': printerName,
-            'printJobId': -1, // Dummy ID for invoice
-            'color': false,
-            'doubleSided': false,
-            'copies': 1,
-            'pagesStart': 1,
-            'pageEnd': 2,
-            'pageOrientation': 'auto',
-          },
-        );
+    try {
+      final result = await platform.invokeMethod(
+        'printPDF',
+        {
+          'filePath': file.path,
+          'printerName': printerName,
+          'printJobId': -1, // Dummy ID for invoice
+          'color': false,
+          'doubleSided': false,
+          'copies': 1,
+          'pagesStart': 1,
+          'pageEnd': 2,
+          'pageOrientation': 'auto',
+        },
+      );
 
-        if (result == 'success') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Invoice printed successfully.'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        } else if (result == 'Sent To Printer') {
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to print invoice: $result'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      } on PlatformException catch (e, s) {
-        debugPrint("Failed to print: '${e.message}'.");
-        await Sentry.captureException(
-          e,
-          stackTrace: s,
+      if (result == 'success') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invoice printed successfully.'),
+            backgroundColor: Colors.green,
+          ),
         );
+      } else if (result == 'Sent To Printer') {
+      } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Print Error: ${e.message}'),
+            content: Text('Failed to print invoice: $result'),
             backgroundColor: Colors.red,
           ),
         );
       }
-    } else if (Platform.isMacOS) {
-      try {
-        final result = await Process.run('lpr', [file.path]);
-        if (result.exitCode == 0) {
-          debugPrint('File berhasil dikirim ke printer.');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File berhasil dikirim ke printer.'),
-            ),
-          );
-        } else {
-          debugPrint('Gagal mencetak file. Error: ${result.stderr}');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Gagal mencetak file'),
-            ),
-          );
-          throw Exception('Failed to send print job to lpr: ${result.stderr}');
-        }
-      } catch (e, s) {
-        await Sentry.captureException(
-          e,
-          stackTrace: s,
-        );
-        debugPrint("Error printing file: $e");
-        rethrow;
-      }
+    } on PlatformException catch (e, s) {
+      debugPrint("Failed to print invoice: '${e.message}'.");
+      await Sentry.captureException(
+        e,
+        stackTrace: s,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Print Error: ${e.message}'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -1008,6 +1084,8 @@ class _HomePageState extends State<HomePage> {
             "duplex": true,
           },
         );
+      } else if (Platform.isMacOS) {
+        await _printSeparatorForMac(printerName, tempFile);
       }
     } catch (e, s) {
       await Sentry.captureException(
@@ -1109,33 +1187,79 @@ class _HomePageState extends State<HomePage> {
       }
     } else if (Platform.isMacOS) {
       try {
-        // Logika cetak macOS tidak diubah, hanya bagian Windows yang diperbaiki
-        final result = await Process.run('lpr', [file.path]);
+        List<String> args = [];
+
+        if (printerName.isNotEmpty) {
+          args.add('-P');
+          args.add(printerName);
+        }
+
+        if (job.copies != null && job.copies! > 1) {
+          args.add('-#${job.copies}');
+        }
+
+        if (job.doubleSided) {
+          args.add('-o');
+          args.add('sides=two-sided-long-edge');
+        } else {
+          args.add('-o');
+          args.add('sides=one-sided');
+        }
+
+        if (job.pagesStart > 0 && job.pageEnd > 0) {
+          args.add('-o');
+          args.add('page-ranges=${job.pagesStart}-${job.pageEnd}');
+        }
+
+        if (job.color == false) {
+          args.add('-o');
+          args.add('ColorModel=Gray');
+        }
+
+        if (job.pageOrientation != null && job.pageOrientation != 'auto') {
+          args.add('-o');
+          args.add(job.pageOrientation == 'landscape' ? 'landscape' : 'portrait');
+        }
+
+        args.add('-o');
+        args.add('fit-to-page');
+
+        args.add(file.path);
+
+        debugPrint("MacOS executing: lpr ${args.join(' ')}");
+
+        final result = await Process.run('lpr', args);
 
         if (result.exitCode == 0) {
-          debugPrint('File berhasil dikirim ke printer.');
+          debugPrint('MacOS: File berhasil dikirim ke printer.');
+
+          await _updatePrintJobStatus(
+              job.id, 'Sent To Printer', currentStatus: job.status);
+
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('File berhasil dikirim ke printer.'),
+              content: Text('File berhasil dikirim ke printer (Mac).'),
+              backgroundColor: Colors.green,
             ),
           );
         } else {
-          debugPrint('Gagal mencetak file. Error: ${result.stderr}');
+          debugPrint('MacOS: Gagal mencetak file. Error: ${result.stderr}');
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Gagal mencetak file'),
+            SnackBar(
+              content: Text('Gagal mencetak: ${result.stderr}'),
+              backgroundColor: Colors.red,
             ),
           );
-          throw Exception(
-              'Failed to send print job to lpr: ${result.stderr}');
         }
       } catch (e, s) {
-        await Sentry.captureException(
-          e,
-          stackTrace: s,
+        // await Sentry.captureException(e, stackTrace: s);
+        // debugPrint("Error printing file (Mac): $e");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error System: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
-        debugPrint("Error printing file: $e");
-        rethrow;
       }
     }
   }

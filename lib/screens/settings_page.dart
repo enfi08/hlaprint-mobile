@@ -23,7 +23,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadUserRole();
-    if (Platform.isWindows) {
+    if (Platform.isWindows || Platform.isMacOS) {
       _loadPrinters(); // Only load list of printers on Windows
     } else if (Platform.isAndroid) {
       _loadIPPrinter(); // Load saved IP on Android
@@ -50,6 +50,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadPrinters() async {
     if (Platform.isWindows) {
+      // ... (Kode Windows Anda yang sudah jalan biarkan saja)
       final result = await Process.run('powershell', ['(Get-CimInstance Win32_Printer).Name']);
       if (result.exitCode == 0) {
         setState(() {
@@ -60,6 +61,62 @@ class _SettingsPageState extends State<SettingsPage> {
               .toList();
         });
       }
+    } else if (Platform.isMacOS) {
+      // --- DEBUGGING START ---
+      debugPrint("--- [MacOS] Starting _loadPrinters ---");
+      try {
+        // Menjalankan perintah lpstat -p untuk melihat status printer
+        final result = await Process.run('lpstat', ['-p']);
+
+        // Log hasil raw output untuk diagnosa
+        debugPrint("[MacOS] lpstat exitCode: ${result.exitCode}");
+        debugPrint("[MacOS] lpstat stdout:\n${result.stdout}");
+        if (result.stderr.toString().isNotEmpty) {
+          debugPrint("[MacOS] lpstat stderr:\n${result.stderr}");
+        }
+
+        if (result.exitCode == 0) {
+          final String output = result.stdout?.toString() ?? '';
+          final List<String> loadedPrinters = [];
+
+          final lines = output.split('\n');
+          for (var line in lines) {
+            line = line.trim();
+            if (line.isEmpty) continue;
+
+            // PERBAIKAN: Gunakan RegExp(r'\s+') untuk handle spasi ganda
+            // Contoh output: "printer Epson_L360 is idle..."
+            final parts = line.split(RegExp(r'\s+'));
+
+            // Log setiap baris yang diproses
+            // debugPrint("[MacOS] Processing line parts: $parts");
+
+            if (parts.length > 1 && parts[0] == 'printer') {
+              // parts[1] adalah nama queue printer (cth: Brother_DCP_T720DW)
+              final printerName = parts[1];
+              loadedPrinters.add(printerName);
+              debugPrint("[MacOS] Found printer: $printerName");
+            }
+          }
+
+          if (loadedPrinters.isEmpty) {
+            debugPrint("[MacOS] Warning: No printers parsing found even though command success.");
+          }
+
+          setState(() {
+            _printers = loadedPrinters;
+          });
+
+          debugPrint("[MacOS] Final Printer List: $_printers");
+        } else {
+          debugPrint("[MacOS] Failed to load printers. Exit code is not 0.");
+        }
+      } catch (e, stackTrace) {
+        debugPrint("[MacOS] Error executing lpstat: $e");
+        debugPrint("[MacOS] StackTrace: $stackTrace");
+      }
+      debugPrint("--- [MacOS] Finished _loadPrinters ---");
+      // --- DEBUGGING END ---
     }
   }
 
@@ -106,7 +163,7 @@ class _SettingsPageState extends State<SettingsPage> {
     bool changesMade = false;
     String savedValue = '';
 
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       if (_ipPrinterController.text.isNotEmpty) {
         final newSavedValue = _ipPrinterController.text.trim();
         final oldSavedValue = prefs.getString(ipPrinterKey) ?? ''; // Get old value for comparison
@@ -141,7 +198,7 @@ class _SettingsPageState extends State<SettingsPage> {
           savedValue = 'Color Printer: $colorPrinterName';
         }
       }
-      if (Platform.isWindows && savedValue.isNotEmpty && _selectedColorPrinter == null) {
+      if (savedValue.isNotEmpty && _selectedColorPrinter == null) {
         savedValue = 'Printer Default: $savedValue';
       }
     }
@@ -152,12 +209,10 @@ class _SettingsPageState extends State<SettingsPage> {
     String? returnMessage;
 
     if (savedValue.isNotEmpty) {
-      if (Platform.isAndroid) {
+      if (Platform.isAndroid || Platform.isIOS) {
         returnMessage = 'IP Printer has been saved successfully:\n$savedValue';
-      } else if (Platform.isWindows) {
-        returnMessage = 'Default Printer has been saved successfully:\n$savedValue';
       } else {
-        returnMessage = 'Settings have been saved successfully.';
+        returnMessage = 'Default Printer has been saved successfully:\n$savedValue';
       }
     } else {
       returnMessage = null;
@@ -210,7 +265,7 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     }
 
-    Widget _buildWindowsSettings() {
+    Widget _buildDesktopSettings() {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -277,7 +332,7 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  isAndroid ? _buildAndroidSettings() : _buildWindowsSettings(),
+                  isAndroid ? _buildAndroidSettings() : _buildDesktopSettings(),
 
                   ElevatedButton(
                     onPressed: isSaveEnabled() ? _saveSettings : null,
