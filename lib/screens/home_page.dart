@@ -1432,7 +1432,7 @@ class _HomePageState extends State<HomePage> {
                               children: [
                                 const Icon(Icons.palette, size: 18, color: Colors.grey),
                                 const SizedBox(width: 8),
-                                Text('Color: $colorText'),
+                                Text('Type: $colorText'),
                               ],
                             ),
                             const SizedBox(height: 4),
@@ -1455,6 +1455,28 @@ class _HomePageState extends State<HomePage> {
                                 const Icon(Icons.description, size: 18, color: Colors.grey),
                                 const SizedBox(width: 8),
                                 Text('Pages: ${job.totalPages}'),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(Icons.copy, size: 18, color: Colors.grey),
+                                const SizedBox(width: 8),
+                                Text('Copies: ${job.copies}'),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.description, size: 18, color: Colors.grey),
+                                const SizedBox(width: 8),
+                                Text('Total Pages: ${job.totalPages * (job.copies ?? 1)}'),
                               ],
                             ),
                             const SizedBox(height: 4),
@@ -1558,7 +1580,7 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           const Icon(Icons.palette, size: 18, color: Colors.grey),
                           const SizedBox(width: 8),
-                          Text('Color: $colorText'),
+                          Text('Type: $colorText'),
                         ],
                       ),
                       const SizedBox(height: 4),
@@ -1569,20 +1591,35 @@ class _HomePageState extends State<HomePage> {
                           Text('Sides: $sideText'),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          const Icon(Icons.attach_money, size: 18, color: Colors.grey),
-                          const SizedBox(width: 8),
-                          Text('Price: $priceText'),
-                        ],
-                      ),
+
                       const SizedBox(height: 4),
                       Row(
                         children: [
                           const Icon(Icons.description, size: 18, color: Colors.grey),
                           const SizedBox(width: 8),
-                          Text('Total Pages: ${job.totalPages}'),
+                          Text('Pages: ${job.totalPages}'),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(Icons.copy, size: 18, color: Colors.grey),
+                          const SizedBox(width: 8),
+                          Text('Copies: $sideText'),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.description, size: 18, color: Colors.grey),
+                          const SizedBox(width: 8),
+                          Text('Total Pages: ${job.totalPages * (job.copies ?? 1)}'),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.attach_money, size: 18, color: Colors.grey),
+                          const SizedBox(width: 8),
+                          Text('Price: $priceText'),
                         ],
                       ),
                       const SizedBox(height: 4),
@@ -1774,14 +1811,15 @@ class _HomePageState extends State<HomePage> {
                                   spacing: 8.0,
                                   runSpacing: 4.0,
                                   children: [
-                                    _buildRichTextItem('Color:', colorText),
+                                    _buildRichTextItem('Type:', colorText),
                                     _buildRichTextItem('Side:', doubleSideText),
                                     _buildRichTextItem('Pages:', '${file.totalPages}'),
-                                    _buildRichTextItem('Range:', pagesRange),
+                                    _buildRichTextItem('Page Range:', pagesRange),
                                     _buildRichTextItem('Copies:', '${file.copies ?? '-'}'),
+                                    _buildRichTextItem('Total Pages:', '${file.totalPages * (file.copies ?? 1)}'),
                                     _buildRichTextItem('Orientation:', file.pageOrientation ?? '-'),
                                     _buildRichTextItem('Price:', priceText),
-                                    _buildRichTextItem('Count:', '${file.count ?? '-'}'),
+                                    _buildRichTextItem('Print Count:', '${file.count ?? '-'}'),
                                     _buildRichTextItem('Phone:', '${file.phone ?? '-'}'),
                                     _buildRichTextItem('Trans. ID:', '${file.transactionId ?? '-'}'),
                                     _buildRichTextItem('Created:', _formatCreatedAt(file.createdAt)),
@@ -1860,10 +1898,10 @@ class _HomePageState extends State<HomePage> {
               // Label dalam bold
               TextSpan(
                 text: '$label ',
-                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               TextSpan(
                 text: '$value',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               const TextSpan(text: ' |'),
             ],

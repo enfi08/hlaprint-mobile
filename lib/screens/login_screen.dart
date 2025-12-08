@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hlaprint/screens/home_page.dart';
 import 'package:hlaprint/services/api_service.dart';
 import 'package:hlaprint/models/user_model.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:hlaprint/constants.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,6 +17,23 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final ApiService _apiService = ApiService();
   bool _isLoading = false;
+
+  String _appVersion = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersionInfo();
+  }
+
+  Future<void> _loadVersionInfo() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = 'Version ${packageInfo.version} (${packageInfo.buildNumber})${isStaging ? " (staging)" : ""}';
+      });
+    }
+  }
 
   Future<void> _login() async {
     setState(() {
@@ -103,6 +122,15 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _login,
                           child: Text('Login'),
                         ),
+                      ),
+                      const SizedBox(height: 16.0),
+                      Text(
+                        _appVersion,
+                        style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 12
+                        ),
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
