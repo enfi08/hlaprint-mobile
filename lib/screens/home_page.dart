@@ -65,9 +65,9 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadUserRoleAndData();
     _startAutoRefresh();
-    // if (Platform.isWindows) {
-    //   _startAutoUpdateCheck();
-    // }
+    if (Platform.isWindows) {
+      _startAutoUpdateCheck();
+    }
     _scrollController.addListener(_onScroll);
 
     for (var controller in _pinControllers) {
@@ -115,8 +115,7 @@ class _HomePageState extends State<HomePage> {
     _autoUpdateTimer?.cancel();
     _checkWindowsUpdate();
 
-    // _autoUpdateTimer = Timer.periodic(const Duration(hours: 1), (timer) {
-    _autoUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    _autoUpdateTimer = Timer.periodic(const Duration(hours: 1), (timer) {
       _checkWindowsUpdate();
     });
   }
