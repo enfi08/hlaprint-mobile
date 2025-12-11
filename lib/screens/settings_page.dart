@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hlaprint/constants.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:hlaprint/services/versioning_service.dart';
 import 'dart:io';
 
 class SettingsPage extends StatefulWidget {
@@ -13,11 +14,17 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   String _appVersion = 'Loading...';
+  String _rawVersion = '';
   String? _selectedPrinter;
   String? _selectedColorPrinter;
   List<String> _printers = [];
   String? _userRole;
   final TextEditingController _ipPrinterController = TextEditingController();
+
+  bool _isCheckingUpdate = false;
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
+  final VersioningService _versioningService = VersioningService();
 
   @override
   void initState() {
@@ -150,12 +157,107 @@ class _SettingsPageState extends State<SettingsPage> {
     final packageInfo = await PackageInfo.fromPlatform();
     if (mounted) {
       setState(() {
+        _rawVersion = packageInfo.version;
         _appVersion = 'Version ${packageInfo.version} (${packageInfo.buildNumber})${isStaging ? " (staging)" : ""}';
       });
     }
   }
 
-  // settings_page.dart
+  Future<void> _checkForUpdate() async {
+    if (!Platform.isWindows) return;
+
+    setState(() => _isCheckingUpdate = true);
+
+    try {
+      final result = await _versioningService.checkVersion(_rawVersion);
+      setState(() => _isCheckingUpdate = false);
+
+      if (result.hasUpdate) {
+        _showUpdateDialog(
+            result.latestVersion ?? 'Unknown',
+            result.downloadUrl ?? '',
+            result.message ?? 'New version available'
+        );
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result.message ?? 'No update available')),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() => _isCheckingUpdate = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error checking update: $e")),
+        );
+      }
+    }
+  }
+
+  void _showUpdateDialog(String newVersion, String url, String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Update Available ($newVersion)'),
+        content: Text('$message\n\nDo you want to download and install now? The application will close automatically.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Later'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _startDownload(url);
+            },
+            child: const Text('Update Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _startDownload(String url) async {
+    setState(() {
+      _isDownloading = true;
+      _downloadProgress = 0.0;
+    });
+
+    try {
+      // 1. Download File
+      File installer = await _versioningService.downloadInstaller(url, (received, total) {
+        if (total != -1) {
+          setState(() {
+            _downloadProgress = received / total;
+          });
+        }
+      });
+
+      // 2. Jalankan Installer
+      if (await installer.exists()) {
+        debugPrint("Running installer: ${installer.path}");
+
+        // Jalankan installer secara terpisah (detached) agar saat aplikasi utama close, installer tetap jalan
+        await Process.start(
+          installer.path,
+          [],
+          mode: ProcessStartMode.detached,
+        );
+
+        // 3. Matikan aplikasi Flutter ini agar installer bisa menimpa file
+        exit(0);
+      }
+    } catch (e) {
+      setState(() => _isDownloading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Update failed: $e")),
+        );
+      }
+    }
+  }
 
   Future<void> _saveSettings() async {
     debugPrint('--- _saveSettings STARTED ---');
@@ -348,7 +450,27 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-
+            if (Platform.isWindows) ...[
+              const Divider(),
+              const SizedBox(height: 10),
+              // Label "Application Update:" dihapus sesuai request
+              if (_isDownloading) ...[
+                LinearProgressIndicator(value: _downloadProgress),
+                const SizedBox(height: 5),
+                Text('Downloading... ${(_downloadProgress * 100).toStringAsFixed(0)}%'),
+              ] else ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: _isCheckingUpdate
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.system_update),
+                    label: Text(_isCheckingUpdate ? 'Checking...' : 'Check for Updates'),
+                    onPressed: _isCheckingUpdate ? null : _checkForUpdate,
+                  ),
+                ),
+              ],
+            ],
           ],
         ),
       ),

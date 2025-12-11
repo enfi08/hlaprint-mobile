@@ -11,6 +11,8 @@ import 'package:hlaprint/services/print_count_service.dart';
 import 'package:hlaprint/services/print_job_service.dart';
 import 'package:hlaprint/services/order_list_service.dart';
 import 'package:hlaprint/services/user_service.dart';
+import 'package:hlaprint/services/versioning_service.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sentry/sentry.dart';
 import 'package:flutter/services.dart';
@@ -39,6 +41,7 @@ class _HomePageState extends State<HomePage> {
   final PrintCountService _printCountService = PrintCountService();
   final OrderListService _orderListService = OrderListService();
   final CashApproveService _cashApproveService = CashApproveService();
+  final VersioningService _versioningService = VersioningService();
   final UserService _userService = UserService();
   bool _isLoading = false;
   String _pin = '';
@@ -49,6 +52,7 @@ class _HomePageState extends State<HomePage> {
   String? _userRole;
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
+  Timer? _autoUpdateTimer;
 
   final _scrollController = ScrollController();
   int _currentPage = 1;
@@ -61,6 +65,9 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadUserRoleAndData();
     _startAutoRefresh();
+    // if (Platform.isWindows) {
+    //   _startAutoUpdateCheck();
+    // }
     _scrollController.addListener(_onScroll);
 
     for (var controller in _pinControllers) {
@@ -102,6 +109,170 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
+  }
+
+  void _startAutoUpdateCheck() {
+    _autoUpdateTimer?.cancel();
+    _checkWindowsUpdate();
+
+    // _autoUpdateTimer = Timer.periodic(const Duration(hours: 1), (timer) {
+    _autoUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _checkWindowsUpdate();
+    });
+  }
+
+  Future<void> _checkWindowsUpdate() async {
+    if (!Platform.isWindows) return;
+
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentVersion = packageInfo.version;
+
+      final result = await _versioningService.checkVersion(currentVersion);
+
+      if (result.hasUpdate) {
+        final String latestVersion = result.latestVersion ?? 'Unknown';
+        final String downloadUrl = result.downloadUrl ?? '';
+        final String message = result.message ?? 'New version available';
+
+        _processUpdateUI(latestVersion, downloadUrl, message, result.forceUpdate);
+      }
+    } catch (e) {
+      debugPrint("Auto-update check failed: $e");
+    }
+  }
+
+  Future<void> _processUpdateUI(String latestVersion, String url, String msg, bool forceUpdate) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (!forceUpdate) {
+      final String ignoredVersion = prefs.getString('update_ignored_version') ?? '';
+      int laterCount = prefs.getInt('update_later_count') ?? 0;
+
+      if (latestVersion != ignoredVersion) {
+        laterCount = 0;
+        await prefs.setInt('update_later_count', 0);
+        await prefs.setString('update_ignored_version', latestVersion);
+      }
+
+      if (laterCount >= 3) {
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
+    _autoUpdateTimer?.cancel();
+    _autoUpdateTimer = null;
+
+    ScaffoldMessenger.of(context).clearMaterialBanners();
+
+    ScaffoldMessenger.of(context).showMaterialBanner(
+      MaterialBanner(
+        content: Text('$msg (v$latestVersion)'),
+        leading: const Icon(Icons.system_update, color: Colors.blue),
+        backgroundColor: Colors.yellow[50],
+        forceActionsBelow: false,
+        actions: [
+          if (!forceUpdate)
+            TextButton(
+              onPressed: () => _handleUpdateLater(latestVersion),
+              child: const Text('Later'),
+            ),
+          ElevatedButton(
+            onPressed: () => _handleUpdateInstall(url),
+            child: const Text('Install'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleUpdateLater(String version) async {
+    ScaffoldMessenger.of(context).clearMaterialBanners();
+
+    final prefs = await SharedPreferences.getInstance();
+    int currentCount = prefs.getInt('update_later_count') ?? 0;
+
+    await prefs.setInt('update_later_count', currentCount + 1);
+    await prefs.setString('update_ignored_version', version);
+
+    debugPrint("Update v$version skipped. Count: ${currentCount + 1}");
+    _startAutoUpdateCheck();
+  }
+
+  Future<void> _handleUpdateInstall(String url) async {
+    ScaffoldMessenger.of(context).clearMaterialBanners();
+
+    ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: const Text('Downloading Update'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Downloading update package, please wait...'),
+                const SizedBox(height: 20),
+                ValueListenableBuilder<double>(
+                  valueListenable: progressNotifier,
+                  builder: (context, value, child) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        LinearProgressIndicator(value: value),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${(value * 100).toStringAsFixed(0)}%',
+                          textAlign: TextAlign.end,
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    try {
+      File installer = await _versioningService.downloadInstaller(url, (received, total) {
+        if (total != -1) {
+          progressNotifier.value = received / total;
+        }
+      });
+
+      if (await installer.exists()) {
+        debugPrint("Running installer: ${installer.path}");
+
+        await Process.start(
+          installer.path,
+          [],
+          mode: ProcessStartMode.detached,
+        );
+
+        exit(0);
+      }
+    } catch (e) {
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.of(context).pop();
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Update failed: $e"), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Future<void> _loadUserRoleAndData() async {
@@ -306,6 +477,8 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _stopAutoRefresh();
+    _autoUpdateTimer?.cancel();
+    ScaffoldMessenger.of(context).clearMaterialBanners();
     _scrollController.dispose();
     for (var controller in _pinControllers) {
       controller.removeListener(_updatePin);
