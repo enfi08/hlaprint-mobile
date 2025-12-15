@@ -27,7 +27,9 @@ import 'dart:io';
 import '../models/user_detail_model.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final Map<String, String>? currentCredentials;
+
+  const HomePage({super.key, this.currentCredentials});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -43,6 +45,7 @@ class _HomePageState extends State<HomePage> {
   final CashApproveService _cashApproveService = CashApproveService();
   final VersioningService _versioningService = VersioningService();
   final UserService _userService = UserService();
+  bool _hasCheckedLoginSave = false;
   bool _isLoading = false;
   String _pin = '';
   String _name = '';
@@ -55,6 +58,7 @@ class _HomePageState extends State<HomePage> {
   Timer? _autoUpdateTimer;
 
   final _scrollController = ScrollController();
+  ScaffoldMessengerState? _scaffoldMessenger;
   int _currentPage = 1;
   final int _limit = 8;
   bool _isLoadMoreLoading = false;
@@ -290,6 +294,63 @@ class _HomePageState extends State<HomePage> {
     } else {
       _fetchAndSaveUserRole();
     }
+    if (!_hasCheckedLoginSave && widget.currentCredentials != null) {
+      _checkAndOfferSaveLogin();
+    }
+  }
+
+  Future<void> _checkAndOfferSaveLogin() async {
+    _hasCheckedLoginSave = true;
+    final email = widget.currentCredentials?['email'];
+    final password = widget.currentCredentials?['password'];
+
+    if (email == null || email.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final String? savedString = prefs.getString('saved_logins');
+    List<dynamic> savedAccounts = [];
+
+    if (savedString != null) {
+      savedAccounts = jsonDecode(savedString);
+    }
+
+    final bool isAlreadySaved = savedAccounts.any((acc) => acc['email'] == email);
+
+    if (!isAlreadySaved && mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text("Save Login Info?"),
+          content: const Text("Would you like to save your account info for faster login next time?"),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text("Not now", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                savedAccounts.add({
+                  'email': email,
+                  'password': password,
+                });
+                await prefs.setString('saved_logins', jsonEncode(savedAccounts));
+
+                if (context.mounted) {
+                  Navigator.of(context).pop(); // Tutup dialog
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Login info saved!")),
+                  );
+                }
+              },
+              child: const Text("Save"),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   void _onScroll() {
@@ -477,13 +538,19 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _stopAutoRefresh();
     _autoUpdateTimer?.cancel();
-    ScaffoldMessenger.of(context).clearMaterialBanners();
+    _scaffoldMessenger?.clearMaterialBanners();
     _scrollController.dispose();
     for (var controller in _pinControllers) {
       controller.removeListener(_updatePin);
       controller.dispose();
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _scaffoldMessenger = ScaffoldMessenger.maybeOf(context);
   }
 
   void _handleKeypadTap(String value) {
@@ -757,15 +824,62 @@ class _HomePageState extends State<HomePage> {
                 final args = [
                   '-sDEVICE=pdfwrite',
                   '-dNoOutputFonts',
-                  '-dPDFSETTINGS=/prepress',
                   '-dCompatibilityLevel=1.4',
-                  '-dHaveTransparency=false',
+                  '-dPDFSETTINGS=/printer',
+                  '-dProcessColorModel=/DeviceRGB',
+                  '-dColorConversionStrategy=/RGB',           // Force RGB color space
+                  '-dConvertCMYKImagesToRGB=true',            // Convert CMYK to RGB
+                  '-dHaveTransparency=false',                 // DISABLE transparency
+                  '-dDetectBlends=false',                     // Disable blend detection
+                  '-dAutoFilterColorImages=false',
+                  '-dAutoFilterGrayImages=false',
+                  '-dColorImageFilter=/FlateEncode',
+                  '-dGrayImageFilter=/FlateEncode',
+                  '-dMonoImageFilter=/CCITTFaxEncode',
+                  '-dDownsampleColorImages=false',
+                  '-dDownsampleGrayImages=false',
+                  '-dDownsampleMonoImages=false',
+                  '-dDoThumbnails=false',
+                  '-dCreateJobTicket=false',
+                  '-dPreserveEPSInfo=false',
+                  '-dPreserveOPIComments=false',
+                  '-dPreserveOverprintSettings=false',
+                  '-dUCRandBGInfo=/Remove',                   // Remove background info
                   '-dNOPAUSE',
                   '-dBATCH',
+                  '-dQUIET',
                   '-dSAFER',
-                  '-sOutputFile=$processedFilePath',
-                  downloadedFile.path
+                  // --- POSTSCRIPT CODE UNTUK BACKGROUND PUTIH ---
+                  '-c',
+                  '<< /ProcessColorModel /DeviceRGB >> setdistillerparams', // Set RGB
+                  '-c',
+                  '<< /AlwaysEmbed [/Helvetica /Times-Roman] >> setdistillerparams',
+                  '-c',
+                  '<< /NeverEmbed [/Courier /Symbol /ZapfDingbats] >> setdistillerparams',
+                  '-c',
+                  '<< /AntiAliasColorImages false >> setdistillerparams',
+                  '-c',
+                  '<< /AntiAliasGrayImages false >> setdistillerparams',
+                  '-c',
+                  '<< /AntiAliasMonoImages false >> setdistillerparams',
+                  '-c',
+                  '.setpdfwrite',
+                  '-f',
+                  downloadedFile.path,
+                  '-sOutputFile=$processedFilePath'
                 ];
+                // final args = [
+                //   '-sDEVICE=pdfwrite',
+                //   '-dNoOutputFonts',
+                //   '-dPDFSETTINGS=/prepress',
+                //   '-dCompatibilityLevel=1.4',
+                //   '-dHaveTransparency=false',
+                //   '-dNOPAUSE',
+                //   '-dBATCH',
+                //   '-dSAFER',
+                //   '-sOutputFile=$processedFilePath',
+                //   downloadedFile.path
+                // ];
 
                 final result = await Process.run(gsPath, args);
 
