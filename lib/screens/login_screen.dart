@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:hlaprint/screens/home_page.dart';
@@ -23,6 +24,9 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isPasswordVisible = false;
   String _appVersion = '';
   List<Map<String, String>> _savedAccounts = [];
+  bool _isSslEnabled = true;
+  int _secretTapCount = 0;
+  DateTime? _lastTapTime;
 
   @override
   void initState() {
@@ -33,9 +37,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _loadVersionInfo() async {
     final packageInfo = await PackageInfo.fromPlatform();
+    final prefs = await SharedPreferences.getInstance();
+
+    bool sslStatus = prefs.getBool('ssl_enabled') ?? true;
+
     if (mounted) {
       setState(() {
-        _appVersion = 'Version ${packageInfo.version} (${packageInfo.buildNumber})${isStaging ? " (staging)" : ""}';
+        _isSslEnabled = sslStatus;
+        _appVersion = 'Version ${packageInfo.version} ${isStaging ? "(staging)" : ""}';
       });
     }
   }
@@ -49,6 +58,68 @@ class _LoginScreenState extends State<LoginScreen> {
         _savedAccounts = decoded.map((e) => Map<String, String>.from(e)).toList();
       });
     }
+  }
+
+  void _handleSecretTap() async {
+    final now = DateTime.now();
+
+    if (_lastTapTime == null || now.difference(_lastTapTime!) > const Duration(seconds: 1)) {
+      _secretTapCount = 0;
+    }
+
+    _lastTapTime = now;
+    _secretTapCount++;
+
+    print("LOG: Tap Logo Count: $_secretTapCount");
+
+    if (_secretTapCount == 5) {
+      _secretTapCount = 0; // Reset
+      await _toggleSslMode();
+    }
+  }
+
+  Future<void> _toggleSslMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool currentSslStatus = prefs.getBool('ssl_enabled') ?? true;
+
+    bool newStatus = !currentSslStatus;
+
+    await prefs.setBool('ssl_enabled', newStatus);
+
+    String message = newStatus
+        ? "SSL Enabled (SECURE MODE).\nThe apps will close. Please reopen it to apply the changes."
+        : "SSL Disabled (BYPASS MODE).\nThe apps will close. Please reopen it to apply the changes.";
+
+    debugPrint("LOG: $message");
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Row(
+            children: [
+              Icon(newStatus ? Icons.security : Icons.no_encryption_gmailerrorred,
+                  color: newStatus ? Colors.green : Colors.red),
+              SizedBox(width: 10),
+              const Text("Developer Mode"),
+            ],
+          ),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () {
+                exit(0);
+              },
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _fillCredentials(Map<String, String> account) {
@@ -67,6 +138,8 @@ class _LoginScreenState extends State<LoginScreen> {
         _passwordController.text,
       );
 
+      if (!mounted) return;
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (context) => HomePage(
@@ -79,8 +152,12 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
     } catch (e) {
+      final errorMessage = e.toString().replaceAll('Exception: ', '');
+
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Login failed: ${e.toString()}')),
+        SnackBar(content: Text(errorMessage)),
       );
     } finally {
       setState(() {
@@ -111,9 +188,12 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: <Widget>[
-                      Image.asset(
-                        'assets/icon/icon.png',
-                        height: 150.0,
+                      GestureDetector(
+                        onTap: _handleSecretTap,
+                        child: Image.asset(
+                          'assets/icon/icon.png',
+                          height: 150.0,
+                        ),
                       ),
                       SizedBox(height: 16.0),
                       Text(
@@ -204,11 +284,22 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 16.0),
-                      Text(
-                        _appVersion,
-                        style: TextStyle(
+                      Text.rich(
+                        TextSpan(
+                          style: TextStyle(
                             color: Colors.grey[600],
-                            fontSize: 12
+                            fontSize: 12,
+                          ),
+                          children: [
+                            TextSpan(text: _appVersion),
+                            if (!_isSslEnabled)
+                              const TextSpan(
+                                text: ' (unsecured mode)',
+                                style: TextStyle(
+                                  color: Colors.red,
+                                ),
+                              ),
+                          ],
                         ),
                         textAlign: TextAlign.center,
                       ),

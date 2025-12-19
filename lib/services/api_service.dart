@@ -27,7 +27,10 @@ class ApiService {
         final jsonResponse = jsonDecode(response.body);
         if (jsonResponse['status'] == 200) {
           User user = User.fromJson(jsonResponse);
-          await _authService.save(user.token, user.userRole, user.shopId, user.isSkipCashier);
+          if (user.shopId == null) {
+            throw Exception('This user account is missing a Shop ID. Please contact the administrator.');
+          }
+          await _authService.save(user.token, user.userRole, user.shopId!, user.isSkipCashier);
           return user;
         } else {
           throw Exception(jsonResponse['message']);
@@ -43,6 +46,9 @@ class ApiService {
         e,
         stackTrace: s,
       );
+      if (e.toString().contains("Shop ID")) {
+        rethrow;
+      }
       throw Exception('Failed to connect to the server: $e');
     }
   }

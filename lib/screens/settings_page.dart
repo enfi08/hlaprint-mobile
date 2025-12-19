@@ -19,6 +19,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _selectedColorPrinter;
   List<String> _printers = [];
   String? _userRole;
+  bool _isSslEnabled = true;
   final TextEditingController _ipPrinterController = TextEditingController();
 
   bool _isCheckingUpdate = false;
@@ -155,10 +156,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadVersionInfo() async {
     final packageInfo = await PackageInfo.fromPlatform();
+    final prefs = await SharedPreferences.getInstance();
+    final bool sslStatus = prefs.getBool('ssl_enabled') ?? true;
     if (mounted) {
       setState(() {
+        _isSslEnabled = sslStatus;
         _rawVersion = packageInfo.version;
-        _appVersion = 'Version ${packageInfo.version} (${packageInfo.buildNumber})${isStaging ? " (staging)" : ""}';
+        _appVersion = 'Version ${packageInfo.version} ${isStaging ? "(staging)" : ""}';
       });
     }
   }
@@ -442,9 +446,20 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
 
                   const SizedBox(height: 20),
-                  Text(
-                    _appVersion,
-                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                  Text.rich(
+                    TextSpan(
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                      children: [
+                        TextSpan(text: _appVersion),
+                        if (!_isSslEnabled)
+                          const TextSpan(
+                            text: ' (unsecured mode)',
+                            style: TextStyle(
+                              color: Colors.red,
+                            ),
+                          ),
+                      ],
+                    ),
                     textAlign: TextAlign.center,
                   ),
                 ],

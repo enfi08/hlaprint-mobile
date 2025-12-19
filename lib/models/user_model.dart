@@ -1,13 +1,13 @@
 class User {
   final String token;
   final String userRole;
-  final String shopId;
+  final String? shopId;
   final bool isSkipCashier;
 
   User({
     required this.token,
     required this.userRole,
-    required this.shopId,
+    this.shopId,
     required this.isSkipCashier,
   });
 

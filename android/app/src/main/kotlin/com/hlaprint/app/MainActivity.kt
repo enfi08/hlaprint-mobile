@@ -142,7 +142,8 @@ class MainActivity : FlutterActivity() {
                 pdfFile
             }
 
-            val printerUri = URI.create("http://$printerIp:631/ipp/port1")
+            val ippUrl = "ipp://$printerIp:631/ipp/print"
+            val printerUri = URI.create(ippUrl)
             val printer = IppPrinter(printerUri)
 
             val job = printer.printJob(

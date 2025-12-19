@@ -1,15 +1,28 @@
-
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:hlaprint/screens/home_page.dart';
 import 'package:hlaprint/screens/login_screen.dart';
+import 'package:hlaprint/services/MyHttpOverrides.dart';
 import 'package:hlaprint/services/auth_service.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final authService = AuthService();
-  final token = await authService.getToken();
-  final String initialRoute = token != null ? '/home' : '/login';
+
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    bool isSslEnabled = prefs.getBool('ssl_enabled') ?? true;
+
+    debugPrint("LOG: SSL Config: ${isSslEnabled ? 'ENABLED (Secure)' : 'DISABLED (Bypass)'}");
+
+    if (!isSslEnabled) {
+      HttpOverrides.global = MyHttpOverrides();
+    }
+  } catch (e) {
+    debugPrint("LOG Error: $e");
+  }
+
   await SentryFlutter.init(
         (options) {
       options.dsn = 'https://7022892b4c4313f2acf1b4bd43a0c7a7@o4508279105060864.ingest.de.sentry.io/4510219873812560';
@@ -17,9 +30,25 @@ void main() async {
       options.sendDefaultPii = true;
       options.enableAppHangTracking = false;
     },
-    appRunner: () => runApp(
-      MyApp(initialRoute: initialRoute),
-    ),
+    appRunner: () async {
+      String initialRoute = '/login';
+
+      try {
+        final authService = AuthService();
+        final token = await authService.getToken();
+
+        if (token != null) {
+          initialRoute = '/home';
+        }
+      } catch (e, stackTrace) {
+        debugPrint("ERROR INITIALIZATION: $e");
+        await Sentry.captureException(e, stackTrace: stackTrace);
+      }
+
+      runApp(
+        MyApp(initialRoute: initialRoute),
+      );
+    },
   );
 }
 
@@ -42,4 +71,3 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-

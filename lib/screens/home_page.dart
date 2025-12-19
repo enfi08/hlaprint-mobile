@@ -56,6 +56,8 @@ class _HomePageState extends State<HomePage> {
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
   Timer? _autoUpdateTimer;
+  int _secretTapCount = 0;
+  DateTime? _lastTapTime;
 
   final _scrollController = ScrollController();
   ScaffoldMessengerState? _scaffoldMessenger;
@@ -493,6 +495,59 @@ class _HomePageState extends State<HomePage> {
           ],
         );
       },
+    );
+  }
+
+  void _handleSecretTap() async {
+    final now = DateTime.now();
+    if (_lastTapTime == null || now.difference(_lastTapTime!) > const Duration(seconds: 1)) {
+      _secretTapCount = 0;
+    }
+    _lastTapTime = now;
+    _secretTapCount++;
+
+    if (_secretTapCount == 5) {
+      _secretTapCount = 0; // Reset
+      await _toggleSslMode();
+    }
+  }
+
+  Future<void> _toggleSslMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool currentSslStatus = prefs.getBool('ssl_enabled') ?? true;
+    bool newStatus = !currentSslStatus;
+
+    await prefs.setBool('ssl_enabled', newStatus);
+
+    String message = newStatus
+        ? "SSL Enabled (SECURE MODE).\nThe apps will close. Please reopen it to apply the changes."
+        : "SSL Disabled (BYPASS MODE).\nThe apps will close. Please reopen it to apply the changes.";
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Row(
+            children: [
+              Icon(newStatus ? Icons.security : Icons.no_encryption_gmailerrorred,
+                  color: newStatus ? Colors.green : Colors.red),
+              const SizedBox(width: 10),
+              const Text("Developer Mode"),
+            ],
+          ),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => exit(0),
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1215,20 +1270,40 @@ class _HomePageState extends State<HomePage> {
       );
     }
   }
-  
-  Future<Uint8List> fetchInvoicePdf(String url) async {
-    debugPrint('fetchInvoicePdf: $url');
-    final response = await http.post(
-      Uri.parse("$baseUrl/api/generate-pdf"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({"url": url}),
-    );
 
-    if (response.statusCode == 200) {
-      return response.bodyBytes;
-    } else {
-      throw Exception("PDF generation failed");
+  Future<Uint8List> fetchInvoicePdf(String url) async {
+    int maxRetries = 3;
+    int attempt = 0;
+
+    while (attempt < maxRetries) {
+      attempt++;
+      try {
+        debugPrint("📄 Request PDF Invoice (Percobaan $attempt/$maxRetries)...");
+        final response = await http.post(
+          Uri.parse("$baseUrl/api/generate-pdf"),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({"url": url}),
+        );
+        if (response.statusCode == 200) {
+          if (response.bodyBytes.isEmpty) {
+            throw Exception("Server merespon 200 OK tapi data PDF kosong (0 bytes).");
+          }
+          return response.bodyBytes;
+        } else {
+          throw Exception("Gagal download PDF. Status Code: ${response.statusCode}");
+        }
+
+      } catch (e) {
+        debugPrint("⚠️ Gagal pada percobaan ke-$attempt: $e");
+
+        if (attempt >= maxRetries) {
+          throw Exception("Gagal print invoice setelah $maxRetries kali percobaan. Cek koneksi server.");
+        }
+
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
+    throw Exception("Unexpected Error fetching PDF");
   }
 
   Future<File> rasterizePdf(String url, String filename, int pageStart, int pageEnd) async {
@@ -2202,7 +2277,26 @@ class _HomePageState extends State<HomePage> {
         ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole)) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text("Hlaprint"),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                onTap: _handleSecretTap,
+                child: Container(
+                  margin: const EdgeInsets.only(right: 8.0),
+                  child: Image.asset(
+                    'assets/icon/icon.png',
+                    height: 30,
+                    width: 30,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Icon(Icons.broken_image, color: Colors.white);
+                    },
+                  ),
+                ),
+              ),
+              const Text("Hlaprint"),
+            ],
+          ),
           actions: [
             IconButton(
               icon: const Icon(Icons.refresh),
@@ -2261,7 +2355,26 @@ class _HomePageState extends State<HomePage> {
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Hlaprint"),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GestureDetector(
+              onTap: _handleSecretTap,
+              child: Container(
+                margin: const EdgeInsets.only(right: 8.0),
+                child: Image.asset(
+                  'assets/icon/icon.png',
+                  height: 30,
+                  width: 30,
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Icon(Icons.broken_image, color: Colors.white);
+                  },
+                ),
+              ),
+            ),
+            const Text("Hlaprint"),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
