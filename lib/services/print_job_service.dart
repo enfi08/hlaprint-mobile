@@ -62,33 +62,71 @@ class PrintJobService {
   }
 
   Future<void> updatePrintJobStatus(int printJobId, String status) async {
+    int maxRetries = 3;
+    int attempt = 0;
 
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/update-status'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: jsonEncode(<String, dynamic>{
-        'pass': '123qwe123.,',
-        'printJobId': printJobId.toString(),
-        'status': status,
-      }),
-    );
+    while (attempt < maxRetries) {
+      try {
+        attempt++;
+        final response = await http.post(
+          Uri.parse('$baseUrl/api/update-status'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: jsonEncode(<String, dynamic>{
+            'pass': '123qwe123.,',
+            'printJobId': printJobId.toString(),
+            'status': status,
+          }),
+        ).timeout(const Duration(seconds: 30));
 
-    if (response.statusCode != 200) {
-      final errorData = json.decode(response.body);
-      throw Exception(errorData['message'] ?? 'Failed to update print job status.');
+        if (response.statusCode == 200) {
+          return;
+        } else {
+          if (attempt == maxRetries) {
+            try {
+              final errorData = json.decode(response.body);
+              throw Exception(errorData['message'] ?? 'Failed to update print job status.');
+            } catch (_) {
+              throw Exception('Failed to update print job status. Status Code: ${response.statusCode}');
+            }
+          }
+        }
+      } catch (e) {
+        if (attempt == maxRetries) {
+          throw Exception("Failed to update status after $maxRetries attempts. Error: $e");
+        }
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
   }
 
   Future<String> fetchInvoiceHtml(String invoiceUrl) async {
-    final response = await http.get(Uri.parse(invoiceUrl));
+    int maxRetries = 3;
+    int attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        attempt++;
+        final response = await http
+            .get(Uri.parse(invoiceUrl))
+            .timeout(const Duration(seconds: 30));
 
-    if (response.statusCode == 200) {
-      return response.body;
-    } else {
-      throw Exception('Failed to fetch invoice HTML.');
+        if (response.statusCode == 200) {
+          return response.body;
+        } else {
+          if (attempt == maxRetries) {
+            throw Exception("Failed to fetch invoice HTML. Status: ${response.statusCode}");
+          }
+        }
+      } catch (e) {
+        if (attempt == maxRetries) {
+          throw Exception("Failed to fetch invoice HTML after $maxRetries attempts. Error: $e");
+        }
+
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
+    throw Exception("Failed to fetch invoice HTML: Unknown error");
   }
 }
