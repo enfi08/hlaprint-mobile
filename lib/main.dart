@@ -4,11 +4,14 @@ import 'package:hlaprint/screens/home_page.dart';
 import 'package:hlaprint/screens/login_screen.dart';
 import 'package:hlaprint/services/MyHttpOverrides.dart';
 import 'package:hlaprint/services/auth_service.dart';
+import 'package:hlaprint/utils/migration_helper.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await performWindowsDataMigration();
 
   try {
     final prefs = await SharedPreferences.getInstance();

@@ -879,62 +879,14 @@ class _HomePageState extends State<HomePage> {
                 final args = [
                   '-sDEVICE=pdfwrite',
                   '-dNoOutputFonts',
-                  '-dCompatibilityLevel=1.4',
                   '-dPDFSETTINGS=/printer',
-                  '-dProcessColorModel=/DeviceRGB',
-                  '-dColorConversionStrategy=/RGB',           // Force RGB color space
-                  '-dConvertCMYKImagesToRGB=true',            // Convert CMYK to RGB
-                  '-dHaveTransparency=false',                 // DISABLE transparency
-                  '-dDetectBlends=false',                     // Disable blend detection
-                  '-dAutoFilterColorImages=false',
-                  '-dAutoFilterGrayImages=false',
-                  '-dColorImageFilter=/FlateEncode',
-                  '-dGrayImageFilter=/FlateEncode',
-                  '-dMonoImageFilter=/CCITTFaxEncode',
-                  '-dDownsampleColorImages=false',
-                  '-dDownsampleGrayImages=false',
-                  '-dDownsampleMonoImages=false',
-                  '-dDoThumbnails=false',
-                  '-dCreateJobTicket=false',
-                  '-dPreserveEPSInfo=false',
-                  '-dPreserveOPIComments=false',
-                  '-dPreserveOverprintSettings=false',
-                  '-dUCRandBGInfo=/Remove',                   // Remove background info
+                  '-dCompatibilityLevel=1.4',
                   '-dNOPAUSE',
                   '-dBATCH',
-                  '-dQUIET',
                   '-dSAFER',
-                  // --- POSTSCRIPT CODE UNTUK BACKGROUND PUTIH ---
-                  '-c',
-                  '<< /ProcessColorModel /DeviceRGB >> setdistillerparams', // Set RGB
-                  '-c',
-                  '<< /AlwaysEmbed [/Helvetica /Times-Roman] >> setdistillerparams',
-                  '-c',
-                  '<< /NeverEmbed [/Courier /Symbol /ZapfDingbats] >> setdistillerparams',
-                  '-c',
-                  '<< /AntiAliasColorImages false >> setdistillerparams',
-                  '-c',
-                  '<< /AntiAliasGrayImages false >> setdistillerparams',
-                  '-c',
-                  '<< /AntiAliasMonoImages false >> setdistillerparams',
-                  '-c',
-                  '.setpdfwrite',
-                  '-f',
-                  downloadedFile.path,
-                  '-sOutputFile=$processedFilePath'
+                  '-sOutputFile=$processedFilePath',
+                  downloadedFile.path
                 ];
-                // final args = [
-                //   '-sDEVICE=pdfwrite',
-                //   '-dNoOutputFonts',
-                //   '-dPDFSETTINGS=/prepress',
-                //   '-dCompatibilityLevel=1.4',
-                //   '-dHaveTransparency=false',
-                //   '-dNOPAUSE',
-                //   '-dBATCH',
-                //   '-dSAFER',
-                //   '-sOutputFile=$processedFilePath',
-                //   downloadedFile.path
-                // ];
 
                 final result = await Process.run(gsPath, args);
 

@@ -155,7 +155,8 @@ class MainActivity : FlutterActivity() {
                 IppAttribute("orientation-requested", IppTag.Enum, orientation),
                 IppAttribute("print-color-mode", IppTag.Keyword, colorMode),
                 IppAttribute("print-quality", IppTag.Enum, 4),
-                IppAttribute("media", IppTag.Keyword, "iso_a4_210x297mm")
+                IppAttribute("media", IppTag.Keyword, "iso_a4_210x297mm"),
+                IppAttribute("print-scaling", IppTag.Keyword, "none")
             )
             println("✅ Job submitted: ${job.id}")
             //  Thread.sleep(2000)
