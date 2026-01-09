@@ -2,21 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:hlaprint/colors.dart';
-import 'package:hlaprint/models/print_job_model.dart';
-import 'package:hlaprint/screens/settings_page.dart';
-import 'package:hlaprint/services/auth_service.dart';
-import 'package:hlaprint/services/cash_approve_service.dart';
-import 'package:hlaprint/services/print_count_service.dart';
-import 'package:hlaprint/services/print_job_service.dart';
-import 'package:hlaprint/services/order_list_service.dart';
-import 'package:hlaprint/services/user_service.dart';
-import 'package:hlaprint/services/versioning_service.dart';
+import 'package:Hlaprint/colors.dart';
+import 'package:Hlaprint/models/print_job_model.dart';
+import 'package:Hlaprint/screens/settings_page.dart';
+import 'package:Hlaprint/services/auth_service.dart';
+import 'package:Hlaprint/services/cash_approve_service.dart';
+import 'package:Hlaprint/services/print_count_service.dart';
+import 'package:Hlaprint/services/print_job_service.dart';
+import 'package:Hlaprint/services/order_list_service.dart';
+import 'package:Hlaprint/services/user_service.dart';
+import 'package:Hlaprint/services/versioning_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sentry/sentry.dart';
 import 'package:flutter/services.dart';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:path/path.dart' as p;
 import 'package:http/http.dart' as http;
@@ -25,6 +25,7 @@ import 'package:flutter/foundation.dart';
 import 'dart:io';
 
 import '../models/user_detail_model.dart';
+
 
 class HomePage extends StatefulWidget {
   final Map<String, String>? currentCredentials;
@@ -56,8 +57,6 @@ class _HomePageState extends State<HomePage> {
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
   Timer? _autoUpdateTimer;
-  int _secretTapCount = 0;
-  DateTime? _lastTapTime;
 
   final _scrollController = ScrollController();
   ScaffoldMessengerState? _scaffoldMessenger;
@@ -71,9 +70,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadUserRoleAndData();
     _startAutoRefresh();
-    if (Platform.isWindows) {
-      _startAutoUpdateCheck();
-    }
+    _startAutoUpdateCheck();
     _scrollController.addListener(_onScroll);
 
     for (var controller in _pinControllers) {
@@ -215,8 +212,10 @@ class _HomePageState extends State<HomePage> {
       context: context,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
-        return PopScope(
-          canPop: false,
+        return WillPopScope(
+          onWillPop: () async {
+            return false;
+          },
           child: AlertDialog(
             title: const Text('Downloading Update'),
             content: Column(
@@ -498,59 +497,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _handleSecretTap() async {
-    final now = DateTime.now();
-    if (_lastTapTime == null || now.difference(_lastTapTime!) > const Duration(seconds: 1)) {
-      _secretTapCount = 0;
-    }
-    _lastTapTime = now;
-    _secretTapCount++;
-
-    if (_secretTapCount == 5) {
-      _secretTapCount = 0; // Reset
-      await _toggleSslMode();
-    }
-  }
-
-  Future<void> _toggleSslMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    bool currentSslStatus = prefs.getBool('ssl_enabled') ?? true;
-    bool newStatus = !currentSslStatus;
-
-    await prefs.setBool('ssl_enabled', newStatus);
-
-    String message = newStatus
-        ? "SSL Enabled (SECURE MODE).\nThe apps will close. Please reopen it to apply the changes."
-        : "SSL Disabled (BYPASS MODE).\nThe apps will close. Please reopen it to apply the changes.";
-
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          title: Row(
-            children: [
-              Icon(newStatus ? Icons.security : Icons.no_encryption_gmailerrorred,
-                  color: newStatus ? Colors.green : Colors.red),
-              const SizedBox(width: 10),
-              const Text("Developer Mode"),
-            ],
-          ),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () => exit(0),
-              child: const Text("OK"),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Future<String> _getPrinterIP() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(ipPrinterKey) ?? "";
@@ -761,19 +707,7 @@ class _HomePageState extends State<HomePage> {
     final bwPrinterName = prefs.getString(printerNameKey) ?? "";
     final colorPrinterName = prefs.getString(printerColorNameKey);
 
-    String ipPrinter = "";
-    if (Platform.isAndroid) {
-      ipPrinter = await _getPrinterIP();
-      if (ipPrinter.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please go to settings, and set the IP Printer.'),
-          ),
-        );
-        return;
-      }
-    }
-    if ((Platform.isWindows || Platform.isMacOS) && bwPrinterName.isEmpty) {
+    if (bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(_userRole != 'darkstore'
@@ -810,7 +744,7 @@ class _HomePageState extends State<HomePage> {
           if (_userRole != null && _userRole != 'darkstore' && response.printFiles.first.color == true) {
             invoicePrinter = colorPrinterName!;
           }
-          await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter);
+          await _printInvoiceFromHtml(invoicePrinter, response);
         }
 
         // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
@@ -838,45 +772,35 @@ class _HomePageState extends State<HomePage> {
                 .parse(job.filename)
                 .pathSegments
                 .last;
-            if ((Platform.isAndroid || Platform.isMacOS) && !isStaging) {
-              downloadedFile = await rasterizePdf(
-                job.filename,
-                filenameToDownload,
-                job.pagesStart,
-                job.pageEnd
-              );
-            } else {
-              downloadedFile = await _printJobService.downloadFile(
-                job.filename,
-                filenameToDownload,
-              );
-            }
+            downloadedFile = await _printJobService.downloadFile(
+              job.filename,
+              filenameToDownload,
+            );
 
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
             );
 
             File fileToPrint = downloadedFile;
-            if (Platform.isWindows) {
-              File? processedFile;
-              // --- START: PRE-PROCESSING (GHOSTSCRIPT) ---
-              try {
-                final tempDir = await Directory.systemTemp.createTemp();
-                final processedFilePath = p.join(tempDir.path,
-                    'processed_${p.basename(downloadedFile.path)}');
+            File? processedFile;
+            // --- START: PRE-PROCESSING (GHOSTSCRIPT) ---
+            try {
+              final tempDir = await Directory.systemTemp.createTemp();
+              final processedFilePath = p.join(
+                  tempDir.path, 'processed_${p.basename(downloadedFile.path)}');
 
-                final gsPath = p.join(
-                  Directory.current.path,
-                  'gswin64c.exe',
-                );
+              final gsPath = p.join(
+                Directory.current.path,
+                'gswin64c.exe',
+              );
 
-                final gsFile = File(gsPath);
-                if (!await gsFile.exists()) {
-                  throw Exception(
-                      "Ghostscript not found at $gsPath. Bundling required.");
-                }
+              final gsFile = File(gsPath);
+              if (!await gsFile.exists()) {
+                throw Exception(
+                    "Ghostscript not found at $gsPath. Bundling required.");
+              }
 
-                final args = [
+              final args = [
                   '-sDEVICE=pdfwrite',
                   '-dNoOutputFonts',
                   '-dPDFSETTINGS=/printer',
@@ -888,29 +812,49 @@ class _HomePageState extends State<HomePage> {
                   downloadedFile.path
                 ];
 
-                final result = await Process.run(gsPath, args);
+              final result = await Process.run(gsPath, args);
 
-                if (result.exitCode == 0) {
-                  processedFile = File(processedFilePath);
-                  fileToPrint = processedFile;
-                  debugPrint(
-                      "File pre-processed successfully with Ghostscript.");
-                }
-              } catch (e, s) {
-                debugPrint("Error during Ghostscript pre-processing: $e");
+              if (result.exitCode == 0) {
+                processedFile = File(processedFilePath);
+                fileToPrint = processedFile;
+                debugPrint("File pre-processed successfully with Ghostscript.");
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                        "Error during Ghostscript pre-processing: $e"),
-                    backgroundColor: Colors.red,
+                  const SnackBar(
+                    content: Text('File pre-processed successfully with Ghostscript.'),
+                    backgroundColor: Colors.green,
                   ),
                 );
-                // await Sentry.captureException(e, stackTrace: s);
               }
-              // --- END: PRE-PROCESSING (GHOSTSCRIPT) ---
+              else {
+                String errorMsg = result.stderr.toString();
+                if (errorMsg.isEmpty) errorMsg = result.stdout.toString();
+                if (errorMsg.isEmpty) errorMsg = "Unknown error (Exit code ${result.exitCode})";
+
+                debugPrint("GS Error: $errorMsg");
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text("GS Error: ${errorMsg.length > 100 ? errorMsg.substring(0, 100) + '...' : errorMsg}"),
+                    backgroundColor: Colors.red,
+                    duration: const Duration(seconds: 5),
+                  ),
+                );
+              }
+            } catch (e, s) {
+              debugPrint("Error during Ghostscript pre-processing: $e");
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text("Error during Ghostscript pre-processing: $e"),
+                  backgroundColor: Colors.red,
+                ),
+              );
+              // await Sentry.captureException(e, stackTrace: s);
             }
+            // --- END: PRE-PROCESSING (GHOSTSCRIPT) ---
+
             // Kirim ke native code dan tunggu sampai selesai
-            await _printFile(selectedPrinter, fileToPrint, job, ipPrinter);
+            await _printFile(selectedPrinter, fileToPrint, job);
+            await Future.delayed(const Duration(seconds: 2));
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -920,14 +864,15 @@ class _HomePageState extends State<HomePage> {
           } finally {
             // Hapus file sementara setelah setiap pekerjaan selesai atau gagal
             if (downloadedFile != null && await downloadedFile.exists()) {
-              await downloadedFile.delete();
-              debugPrint("Temporary file deleted for job ${i + 1}.");
+              _safeDeleteFile(downloadedFile);
+              // await downloadedFile.delete();
+              // debugPrint("Temporary file deleted for job ${i + 1}.");
             }
           }
         }
 
         if (response.isUseSeparator) {
-          await _printSeparatorFromAsset(bwPrinterName, ipPrinter);
+          await _printSeparatorFromAsset(bwPrinterName);
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -962,7 +907,7 @@ class _HomePageState extends State<HomePage> {
   //   }
   // }
 
-  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse, String ipPrinter) async {
+  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse) async {
     if (jobResponse.userRole != "online") {
       String colorStatus = '';
       bool? color = jobResponse.printFiles.first.color;
@@ -975,28 +920,16 @@ class _HomePageState extends State<HomePage> {
       }
 
       String invoiceUrl;
-      int pageOrientation = 3;
       if (jobResponse.userRole == 'darkstore') {
         String path = "PrintInvoicesNanaNew";
-        if (Platform.isAndroid) {
-          path = "PrintInvoicesNanaAndroid";
-        }
         invoiceUrl = '$baseUrl/$path/${jobResponse
             .transactionId}/${jobResponse.companyId}/$colorStatus';
       } else {
-        pageOrientation = 4;
         invoiceUrl =
         '$baseUrl/PrintInvoices/${jobResponse.transactionId}/$colorStatus';
       }
 
-      if (Platform.isWindows) {
-        await _printInvoiceForWindows(printerName, invoiceUrl, color);
-      } else if (Platform.isMacOS) {
-        await _printInvoiceForMac(printerName, jobResponse.transactionId, jobResponse.companyId, colorStatus, jobResponse.userRole);
-      } else if (Platform.isAndroid) {
-        debugPrint('invoice url: $invoiceUrl');
-        await _printInvoiceForAndroid(invoiceUrl, pageOrientation, ipPrinter);
-      }
+      await _printInvoiceForWindows(printerName, invoiceUrl, color);
     }
   }
 
@@ -1121,54 +1054,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printInvoiceForMac(String printerName, int transId, int companyId, String color, String role) async {
-    try {
-      final path = role == 'darkstore' ? "macos-invoice-nana-pdf" : "macos-invoice-pdf";
-      final bytes = await generateInvoicePdf(path, transId, companyId, color);
-
-      final dir = await getTemporaryDirectory();
-      final filePath = "${dir.path}/invoice_print.pdf";
-      final file = File(filePath);
-      await file.writeAsBytes(bytes);
-
-      List<String> args = [];
-      args.add('-P');
-      args.add(printerName);
-
-      args.add('-o');
-      args.add('sides=one-sided');
-
-      args.add('-o');
-      args.add('ColorModel=Gray');
-
-      args.add('-o');
-      args.add('portrait');
-
-      args.add('-o');
-      args.add('fit-to-page');
-
-      args.add(file.path);
-
-      debugPrint("MacOS executing: lpr ${args.join(' ')}");
-
-      final result = await Process.run('lpr', args);
-
-      if (result.exitCode == 0) {
-        debugPrint('MacOS: Invoice berhasil dikirim ke printer.');
-      } else {
-        debugPrint('MacOS: Gagal mencetak file. Error: ${result.stderr}');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to print invoice: ${result.stderr}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } catch (e) {
-      print("❌ Error printing invoice: $e");
-    }
-  }
-
   Future<Uint8List> generateInvoicePdf(String path, int transId, int companyId, String color) async {
     debugPrint('generateInvoicePdf: $path | transId: $transId | companyId: $companyId | color: $color');
     final response = await http.post(
@@ -1185,41 +1070,6 @@ class _HomePageState extends State<HomePage> {
       return response.bodyBytes;
     } else {
       throw Exception("PDF generation failed");
-    }
-  }
-
-  Future<void> _printSeparatorForMac(String printerName, File file) async {
-    List<String> args = [];
-    args.add('-P');
-    args.add(printerName);
-    args.add('-o');
-    args.add('sides=two-sided-long-edge');
-
-    args.add('-o');
-    args.add('ColorModel=Gray');
-
-    args.add('-o');
-    args.add('portrait');
-
-    args.add('-o');
-    args.add('fit-to-page');
-
-    args.add(file.path);
-
-    debugPrint("MacOS executing: lpr ${args.join(' ')}");
-
-    final result = await Process.run('lpr', args);
-
-    if (result.exitCode == 0) {
-      debugPrint('MacOS: Invoice berhasil dikirim ke printer.');
-    } else {
-      debugPrint('MacOS: Gagal mencetak separator. Error: ${result.stderr}');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to print separator: ${result.stderr}'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 
@@ -1282,38 +1132,6 @@ class _HomePageState extends State<HomePage> {
   }
 
 
-  Future<void> _printInvoiceForAndroid(String invoiceUrl, int pageOrientation, String ipPrinter) async {
-    try {
-      final bytes = await fetchInvoicePdf(invoiceUrl);
-
-      final dir = await getTemporaryDirectory();
-      final filePath = "${dir.path}/invoice_print.pdf";
-      final file = File(filePath);
-      await file.writeAsBytes(bytes);
-      final params = {
-        "filePath": filePath,
-        "orientation": pageOrientation,
-        "ip": ipPrinter,
-        "duplex": false,
-      };
-
-      String result = await platform.invokeMethod<String>(
-        "printInvoicePdf",
-        params,
-      ) ?? "error";
-
-      if (result == "success") {
-        print("✅ Invoice printed successfully");
-      } else {
-        print("❌ Print failed: $result");
-      }
-
-    } catch (e) {
-      print("❌ Error printing invoice: $e");
-    }
-  }
-
-
   Future<void> _printInvoiceFile(String printerName, File file, bool? color) async {
     try {
       final result = await platform.invokeMethod(
@@ -1362,7 +1180,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printSeparatorFromAsset(String printerName, String ipPrinter) async {
+  Future<void> _printSeparatorFromAsset(String printerName) async {
     File? tempFile;
     try {
       final byteData = await rootBundle.load('assets/pdf/separator.pdf');
@@ -1372,7 +1190,6 @@ class _HomePageState extends State<HomePage> {
         byteData.offsetInBytes,
         byteData.lengthInBytes,
       ));
-      if (Platform.isWindows) {
         await platform.invokeMethod(
           'printPDF',
           {
@@ -1387,19 +1204,7 @@ class _HomePageState extends State<HomePage> {
             'pageOrientation': 'auto',
           },
         );
-      } else if (Platform.isAndroid) {
-        await platform.invokeMethod(
-          'printInvoicePdf',
-          {
-            'filePath': tempFile.path,
-            "orientation": 3,
-            "ip": ipPrinter,
-            "duplex": true,
-          },
-        );
-      } else if (Platform.isMacOS) {
-        await _printSeparatorForMac(printerName, tempFile);
-      }
+
     } catch (e, s) {
       await Sentry.captureException(
         e,
@@ -1421,14 +1226,17 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter) async {
-    if (Platform.isWindows) {
+  Future<void> _printFile(String printerName, File file, PrintJob job) async {
       try {
+        String rawPath = file.path; // Path asli dari temp
+        String fixedPath = p.normalize(rawPath).replaceAll('/', '\\'); // Paksa format Windows
+
+        debugPrint("Fixing Path: $rawPath -> $fixedPath");
         final String result = await platform.invokeMethod(
           'printPDF',
           {
             'printJobId': job.id,
-            'filePath': file.path,
+            'filePath': fixedPath,
             'printerName': printerName,
             'color': job.color,
             'doubleSided': job.doubleSided,
@@ -1465,116 +1273,25 @@ class _HomePageState extends State<HomePage> {
           ),
         );
       }
-    } else if (Platform.isAndroid) {
-      int pageOrientation;
-      if (job.pageOrientation == "auto") {
-        pageOrientation = -1;
-      } else {
-        pageOrientation = job.pageOrientation == "portrait" ? 3 : 4; // 3 = portrait, 4 = landscape
-      }
-      final params = {
-        "filePath": file.path,
-        "duplex": job.doubleSided,
-        "color": job.color == true ? "color" : "monochrome",
-        "orientation": pageOrientation,
-        "ip": ipPrinter,
-        "copies": job.copies ?? 1,
-      };
-      if (isStaging) {
-        params["pageStart"] = job.pagesStart;
-        params["pageEnd"] = job.pageEnd;
-      }
-      final String result = await platform.invokeMethod("printPDF", params);
-      if (result == "success") {
-        debugPrint('job id: ${job.id} | current status: ${job.status}');
-        await _updatePrintJobStatus(
-            job.id, 'Sent To Printer', currentStatus: job.status);
-      } else {
-        debugPrint('Failed print: $result');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed print: $result'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } else if (Platform.isMacOS) {
+  }
+
+  Future<void> _safeDeleteFile(File file) async {
+    const int maxRetries = 10; // Coba sampai 10x
+
+    for (int i = 0; i < maxRetries; i++) {
       try {
-        List<String> args = [];
-
-        if (printerName.isNotEmpty) {
-          args.add('-P');
-          args.add(printerName);
+        if (await file.exists()) {
+          await file.delete();
+          debugPrint("File berhasil dihapus: ${file.path}");
         }
-
-        if (job.copies != null && job.copies! > 1) {
-          args.add('-#${job.copies}');
-        }
-
-        if (job.doubleSided) {
-          args.add('-o');
-          args.add('sides=two-sided-long-edge');
-        } else {
-          args.add('-o');
-          args.add('sides=one-sided');
-        }
-
-        if (job.pagesStart > 0 && job.pageEnd > 0) {
-          args.add('-o');
-          args.add('page-ranges=${job.pagesStart}-${job.pageEnd}');
-        }
-
-        if (job.color == false) {
-          args.add('-o');
-          args.add('ColorModel=Gray');
-        }
-
-        if (job.pageOrientation != null && job.pageOrientation != 'auto') {
-          args.add('-o');
-          args.add(job.pageOrientation == 'landscape' ? 'landscape' : 'portrait');
-        }
-
-        args.add('-o');
-        args.add('fit-to-page');
-
-        args.add(file.path);
-
-        debugPrint("MacOS executing: lpr ${args.join(' ')}");
-
-        final result = await Process.run('lpr', args);
-
-        if (result.exitCode == 0) {
-          debugPrint('MacOS: File berhasil dikirim ke printer.');
-
-          await _updatePrintJobStatus(
-              job.id, 'Sent To Printer', currentStatus: job.status);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File berhasil dikirim ke printer (Mac).'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        } else {
-          debugPrint('MacOS: Gagal mencetak file. Error: ${result.stderr}');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Gagal mencetak: ${result.stderr}'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      } catch (e, s) {
-        // await Sentry.captureException(e, stackTrace: s);
-        // debugPrint("Error printing file (Mac): $e");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error System: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        return; // Keluar jika sukses atau file sudah tidak ada
+      } catch (e) {
+        debugPrint("Gagal hapus file (percobaan ${i + 1}/$maxRetries): Sedang dikunci OS...");
+        // Tunggu 1 detik sebelum coba lagi
+        await Future.delayed(const Duration(seconds: 1));
       }
     }
+    debugPrint("Menyerah menghapus file. File akan dibersihkan oleh OS nanti.");
   }
 
   Future<void> _logout() async {
@@ -2197,29 +1914,29 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildRichTextItem(String label, String value) {
-   // if (value == '-') return const SizedBox.shrink();
+    // if (value == '-') return const SizedBox.shrink();
 
     return Padding(
-        padding: const EdgeInsets.only(right: 8.0),
-        child: RichText(
-          text: TextSpan(
-            style: const TextStyle(
-              fontSize: 14.0,
-              color: Colors.black,
-            ),
-            children: <TextSpan>[
-              // Label dalam bold
-              TextSpan(
-                text: '$label ',
-              ),
-              TextSpan(
-                text: '$value',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const TextSpan(text: ' |'),
-            ],
+      padding: const EdgeInsets.only(right: 8.0),
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(
+            fontSize: 14.0,
+            color: Colors.black,
           ),
+          children: <TextSpan>[
+            // Label dalam bold
+            TextSpan(
+              text: '$label ',
+            ),
+            TextSpan(
+              text: '$value',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const TextSpan(text: ' |'),
+          ],
         ),
+      ),
     );
   }
 
@@ -2231,22 +1948,8 @@ class _HomePageState extends State<HomePage> {
         appBar: AppBar(
           title: Row(
             mainAxisSize: MainAxisSize.min,
-            children: [
-              GestureDetector(
-                onTap: _handleSecretTap,
-                child: Container(
-                  margin: const EdgeInsets.only(right: 8.0),
-                  child: Image.asset(
-                    'assets/icon/icon.png',
-                    height: 30,
-                    width: 30,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Icon(Icons.broken_image, color: Colors.white);
-                    },
-                  ),
-                ),
-              ),
-              const Text("Hlaprint"),
+            children: const [
+              Text("Hlaprint"),
             ],
           ),
           actions: [
@@ -2309,22 +2012,8 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: Row(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            GestureDetector(
-              onTap: _handleSecretTap,
-              child: Container(
-                margin: const EdgeInsets.only(right: 8.0),
-                child: Image.asset(
-                  'assets/icon/icon.png',
-                  height: 30,
-                  width: 30,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Icon(Icons.broken_image, color: Colors.white);
-                  },
-                ),
-              ),
-            ),
-            const Text("Hlaprint"),
+          children: const [
+            Text("Hlaprint"),
           ],
         ),
         actions: [

@@ -1,6 +1,6 @@
 {
-    "name": "hlaprint",
-    "short_name": "hlaprint",
+    "name": "hlaprint_win7",
+    "short_name": "hlaprint_win7",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

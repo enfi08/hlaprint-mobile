@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
+import 'package:Hlaprint/services/versioning_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:hlaprint/services/versioning_service.dart';
 import 'dart:io';
 
 class SettingsPage extends StatefulWidget {
@@ -14,14 +14,12 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   String _appVersion = 'Loading...';
-  String _rawVersion = '';
   String? _selectedPrinter;
   String? _selectedColorPrinter;
   List<String> _printers = [];
+  String _rawVersion = '';
   String? _userRole;
-  bool _isSslEnabled = true;
   final TextEditingController _ipPrinterController = TextEditingController();
-
   bool _isCheckingUpdate = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
@@ -31,11 +29,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadUserRole();
-    if (Platform.isWindows || Platform.isMacOS) {
-      _loadPrinters(); // Only load list of printers on Windows
-    } else if (Platform.isAndroid) {
-      _loadIPPrinter(); // Load saved IP on Android
-    }
+    _loadPrinters();
     _loadSelectedPrinter();
     _loadSelectedColorPrinter();
     _loadVersionInfo();
@@ -56,117 +50,6 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _loadPrinters() async {
-    if (Platform.isWindows) {
-      // ... (Kode Windows Anda yang sudah jalan biarkan saja)
-      final result = await Process.run('powershell', ['(Get-CimInstance Win32_Printer).Name']);
-      if (result.exitCode == 0) {
-        setState(() {
-          final String output = result.stdout?.toString() ?? '';
-          _printers = output.split('\n')
-              .map((e) => e.trim())
-              .where((e) => e.isNotEmpty)
-              .toList();
-        });
-      }
-    } else if (Platform.isMacOS) {
-      // --- DEBUGGING START ---
-      debugPrint("--- [MacOS] Starting _loadPrinters ---");
-      try {
-        // Menjalankan perintah lpstat -p untuk melihat status printer
-        final result = await Process.run('lpstat', ['-p']);
-
-        // Log hasil raw output untuk diagnosa
-        debugPrint("[MacOS] lpstat exitCode: ${result.exitCode}");
-        debugPrint("[MacOS] lpstat stdout:\n${result.stdout}");
-        if (result.stderr.toString().isNotEmpty) {
-          debugPrint("[MacOS] lpstat stderr:\n${result.stderr}");
-        }
-
-        if (result.exitCode == 0) {
-          final String output = result.stdout?.toString() ?? '';
-          final List<String> loadedPrinters = [];
-
-          final lines = output.split('\n');
-          for (var line in lines) {
-            line = line.trim();
-            if (line.isEmpty) continue;
-
-            // PERBAIKAN: Gunakan RegExp(r'\s+') untuk handle spasi ganda
-            // Contoh output: "printer Epson_L360 is idle..."
-            final parts = line.split(RegExp(r'\s+'));
-
-            // Log setiap baris yang diproses
-            // debugPrint("[MacOS] Processing line parts: $parts");
-
-            if (parts.length > 1 && parts[0] == 'printer') {
-              // parts[1] adalah nama queue printer (cth: Brother_DCP_T720DW)
-              final printerName = parts[1];
-              loadedPrinters.add(printerName);
-              debugPrint("[MacOS] Found printer: $printerName");
-            }
-          }
-
-          if (loadedPrinters.isEmpty) {
-            debugPrint("[MacOS] Warning: No printers parsing found even though command success.");
-          }
-
-          setState(() {
-            _printers = loadedPrinters;
-          });
-
-          debugPrint("[MacOS] Final Printer List: $_printers");
-        } else {
-          debugPrint("[MacOS] Failed to load printers. Exit code is not 0.");
-        }
-      } catch (e, stackTrace) {
-        debugPrint("[MacOS] Error executing lpstat: $e");
-        debugPrint("[MacOS] StackTrace: $stackTrace");
-      }
-      debugPrint("--- [MacOS] Finished _loadPrinters ---");
-      // --- DEBUGGING END ---
-    }
-  }
-
-  Future<void> _loadSelectedPrinter() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _selectedPrinter = prefs.getString(printerNameKey);
-    });
-  }
-
-  Future<void> _loadSelectedColorPrinter() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _selectedColorPrinter = prefs.getString(printerColorNameKey);
-      });
-    }
-  }
-
-  Future<void> _loadIPPrinter() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedIP = prefs.getString(ipPrinterKey) ?? '';
-    if (mounted) {
-      setState(() {
-        _ipPrinterController.text = savedIP;
-      });
-    }
-  }
-
-  Future<void> _loadVersionInfo() async {
-    final packageInfo = await PackageInfo.fromPlatform();
-    final prefs = await SharedPreferences.getInstance();
-    final bool sslStatus = prefs.getBool('ssl_enabled') ?? true;
-    if (mounted) {
-      setState(() {
-        _isSslEnabled = sslStatus;
-        _rawVersion = packageInfo.version;
-        _appVersion = 'Version ${packageInfo.version} ${isStaging ? "(staging)" : ""}';
-      });
-    }
-  }
-
   Future<void> _checkForUpdate() async {
     if (!Platform.isWindows) return;
 
@@ -174,6 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
     try {
       final result = await _versioningService.checkVersion(_rawVersion);
+
       setState(() => _isCheckingUpdate = false);
 
       if (result.hasUpdate) {
@@ -205,7 +89,7 @@ class _SettingsPageState extends State<SettingsPage> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text('Update Available ($newVersion)'),
-        content: Text('$message\n\nDo you want to download and install now? The application will close automatically.'),
+        content: Text('$message\n\nDownload and install now? The app will restart.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -230,7 +114,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      // 1. Download File
+      // 1. Download File Installer
       File installer = await _versioningService.downloadInstaller(url, (received, total) {
         if (total != -1) {
           setState(() {
@@ -243,7 +127,7 @@ class _SettingsPageState extends State<SettingsPage> {
       if (await installer.exists()) {
         debugPrint("Running installer: ${installer.path}");
 
-        // Jalankan installer secara terpisah (detached) agar saat aplikasi utama close, installer tetap jalan
+        // Jalankan installer secara terpisah (detached)
         await Process.start(
           installer.path,
           [],
@@ -263,50 +147,120 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _loadPrinters() async {
+    if (!Platform.isWindows) return;
+
+    List<String> foundPrinters = [];
+    bool success = false;
+
+    try {
+      const String psCommand = 'Get-WmiObject -Class Win32_Printer | Select-Object -ExpandProperty Name';
+
+      final result = await Process.run('powershell', ['-Command', psCommand]);
+
+      if (result.exitCode == 0) {
+        String output = result.stdout.toString().trim();
+        if (output.isNotEmpty) {
+          foundPrinters = output.split('\n')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+
+          if (foundPrinters.isNotEmpty) {
+            success = true;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("PowerShell loading failed: $e");
+    }
+
+    if (!success || foundPrinters.isEmpty) {
+      try {
+        debugPrint("Attempting WMIC fallback...");
+        final result = await Process.run('wmic', ['printer', 'get', 'name']);
+
+        if (result.exitCode == 0) {
+          final output = result.stdout.toString();
+          final lines = output.split('\n');
+
+          for (var line in lines) {
+            var printerName = line.trim();
+            // Filter header WMIC yang biasanya bernama "Name"
+            if (printerName.isNotEmpty && printerName.toLowerCase() != 'name') {
+              foundPrinters.add(printerName);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint("WMIC loading failed: $e");
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _printers = foundPrinters;
+        debugPrint("Printers Loaded: ${_printers.length}");
+      });
+    }
+  }
+
+  Future<void> _loadSelectedPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _selectedPrinter = prefs.getString(printerNameKey);
+    });
+  }
+
+  Future<void> _loadSelectedColorPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _selectedColorPrinter = prefs.getString(printerColorNameKey);
+      });
+    }
+  }
+
+  Future<void> _loadVersionInfo() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _rawVersion = packageInfo.version;
+        _appVersion = 'Version ${packageInfo.version} ${isStaging ? "(staging)" : ""}';
+      });
+    }
+  }
+
   Future<void> _saveSettings() async {
     debugPrint('--- _saveSettings STARTED ---');
     final prefs = await SharedPreferences.getInstance();
     bool changesMade = false;
     String savedValue = '';
 
-    if (Platform.isAndroid || Platform.isIOS) {
-      if (_ipPrinterController.text.isNotEmpty) {
-        final newSavedValue = _ipPrinterController.text.trim();
-        final oldSavedValue = prefs.getString(ipPrinterKey) ?? ''; // Get old value for comparison
-
-        if (oldSavedValue != newSavedValue) {
-          await prefs.setString(ipPrinterKey, newSavedValue);
-          changesMade = true;
-          debugPrint('Android: IP changed to $newSavedValue');
-        }
-        savedValue = newSavedValue;
+    if (_selectedPrinter != null) {
+      if ((prefs.getString(printerNameKey) ?? '') != _selectedPrinter!) {
+        await prefs.setString(printerNameKey, _selectedPrinter!);
+        changesMade = true;
       }
-    } else {
-      if (_selectedPrinter != null) {
-        if ((prefs.getString(printerNameKey) ?? '') != _selectedPrinter!) {
-          await prefs.setString(printerNameKey, _selectedPrinter!);
-          changesMade = true;
-        }
-        savedValue = _selectedPrinter!;
+      savedValue = _selectedPrinter!;
+    }
+
+    if (_userRole != 'darkstore' && _selectedColorPrinter != null) {
+      String colorPrinterName = _selectedColorPrinter!;
+      if ((prefs.getString(printerColorNameKey) ?? '') != colorPrinterName) {
+        await prefs.setString(printerColorNameKey, colorPrinterName);
+        changesMade = true;
       }
 
-      if (_userRole != 'darkstore' && _selectedColorPrinter != null) {
-        String colorPrinterName = _selectedColorPrinter!;
-        if ((prefs.getString(printerColorNameKey) ?? '') != colorPrinterName) {
-          await prefs.setString(printerColorNameKey, colorPrinterName);
-          changesMade = true;
-        }
-
-        String bwName = prefs.getString(printerNameKey) ?? savedValue;
-        if (bwName.isNotEmpty) {
-          savedValue = 'B/W: $bwName, Color: $colorPrinterName';
-        } else {
-          savedValue = 'Color Printer: $colorPrinterName';
-        }
+      String bwName = prefs.getString(printerNameKey) ?? savedValue;
+      if (bwName.isNotEmpty) {
+        savedValue = 'B/W: $bwName, Color: $colorPrinterName';
+      } else {
+        savedValue = 'Color Printer: $colorPrinterName';
       }
-      if (savedValue.isNotEmpty && _selectedColorPrinter == null) {
-        savedValue = 'Printer Default: $savedValue';
-      }
+    }
+    if (savedValue.isNotEmpty && _selectedColorPrinter == null) {
+      savedValue = 'Printer Default: $savedValue';
     }
 
     debugPrint('Changes made status: $changesMade');
@@ -315,11 +269,7 @@ class _SettingsPageState extends State<SettingsPage> {
     String? returnMessage;
 
     if (savedValue.isNotEmpty) {
-      if (Platform.isAndroid || Platform.isIOS) {
-        returnMessage = 'IP Printer has been saved successfully:\n$savedValue';
-      } else {
-        returnMessage = 'Default Printer has been saved successfully:\n$savedValue';
-      }
+      returnMessage = 'Default Printer has been saved successfully:\n$savedValue';
     } else {
       returnMessage = null;
     }
@@ -327,7 +277,6 @@ class _SettingsPageState extends State<SettingsPage> {
     debugPrint('Return message to home page: $returnMessage');
     if (mounted) {
       Navigator.of(context).pop(returnMessage);
-      debugPrint('Navigator.pop() called with message: $returnMessage');
     }
     debugPrint('--- _saveSettings FINISHED ---');
   }
@@ -335,40 +284,9 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final bool showColorPrinterOption = _userRole != null && _userRole != 'darkstore';
-    final bool isAndroid = Platform.isAndroid;
 
     bool isSaveEnabled() {
-      if (isAndroid) {
-        return _ipPrinterController.text.isNotEmpty;
-      } else {
-        return _selectedPrinter != null;
-      }
-    }
-
-    Widget _buildAndroidSettings() {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            'IP Printer Address:',
-            style: TextStyle(fontSize: 16),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _ipPrinterController,
-            keyboardType: TextInputType.number, // IP addresses are numbers
-            decoration: const InputDecoration(
-              hintText: 'e.g., 192.168.1.100',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (value) {
-              setState(() {
-              });
-            },
-          ),
-          const SizedBox(height: 24),
-        ],
-      );
+      return _selectedPrinter != null;
     }
 
     Widget _buildDesktopSettings() {
@@ -427,7 +345,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(isAndroid ? 'Setting IP Printer' : 'Setting Default Printer'),
+        title: const Text('Setting Default Printer'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadPrinters,
+          )
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -435,40 +359,35 @@ class _SettingsPageState extends State<SettingsPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  isAndroid ? _buildAndroidSettings() : _buildDesktopSettings(),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!Platform.isWindows)
+                      const SizedBox.shrink() // Logic Android disembunyikan
+                    else
+                      _buildDesktopSettings(),
 
-                  ElevatedButton(
-                    onPressed: isSaveEnabled() ? _saveSettings : null,
-                    child: const Text('Save'),
-                  ),
-
-                  const SizedBox(height: 20),
-                  Text.rich(
-                    TextSpan(
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                      children: [
-                        TextSpan(text: _appVersion),
-                        if (!_isSslEnabled)
-                          const TextSpan(
-                            text: ' (unsecured mode)',
-                            style: TextStyle(
-                              color: Colors.red,
-                            ),
-                          ),
-                      ],
+                    ElevatedButton(
+                      onPressed: isSaveEnabled() ? _saveSettings : null,
+                      child: const Text('Save'),
                     ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+
+                    const SizedBox(height: 20),
+                    Text.rich(
+                      TextSpan(
+                        style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                        children: [TextSpan(text: _appVersion)],
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
               ),
             ),
             if (Platform.isWindows) ...[
               const Divider(),
               const SizedBox(height: 10),
-              // Label "Application Update:" dihapus sesuai request
               if (_isDownloading) ...[
                 LinearProgressIndicator(value: _downloadProgress),
                 const SizedBox(height: 5),

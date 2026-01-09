@@ -1,5 +1,5 @@
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:flutter/foundation.dart';
 
 class AuthService {

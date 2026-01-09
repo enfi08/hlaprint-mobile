@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "Hlaprint" "\0"
-            VALUE "FileDescription", "hlaprint" "\0"
+            VALUE "FileDescription", "Hlaprint" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "hlaprint" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 HlaPrint. All rights reserved." "\0"
-            VALUE "OriginalFilename", "hlaprint.exe" "\0"
-            VALUE "ProductName", "hlaprint" "\0"
+            VALUE "InternalName", "Hlaprint" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Hlaprint. All rights reserved." "\0"
+            VALUE "OriginalFilename", "Hlaprint.exe" "\0"
+            VALUE "ProductName", "Hlaprint" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

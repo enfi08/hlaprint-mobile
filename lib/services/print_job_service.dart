@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:hlaprint/constants.dart';
-import 'package:hlaprint/models/print_job_model.dart';
-import 'package:hlaprint/services/auth_service.dart';
+import 'package:Hlaprint/constants.dart';
+import 'package:Hlaprint/models/print_job_model.dart';
+import 'package:Hlaprint/services/auth_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:sentry/sentry.dart';

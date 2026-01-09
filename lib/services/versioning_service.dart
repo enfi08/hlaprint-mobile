@@ -1,14 +1,14 @@
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:hlaprint/constants.dart';
-import 'package:hlaprint/models/app_version_model.dart';
+import 'package:Hlaprint/constants.dart';
+import 'package:Hlaprint/models/app_version_model.dart';
 import 'package:path_provider/path_provider.dart';
 
 class VersioningService {
   final Dio _dio = Dio();
 
   Future<AppVersion> checkVersion(String currentVersion) async {
-    final url = '$baseUrl/api/check-version-win';
+    const url = '$baseUrl/api/check-version';
 
     final headers = {
       "Accept": "application/json",
@@ -18,7 +18,8 @@ class VersioningService {
       final response = await _dio.get(
         url,
         queryParameters: {
-          "current_version": currentVersion
+          "current_version": currentVersion,
+          "platform": "windows_7"
         },
         options: Options(headers: headers),
       );
@@ -26,11 +27,22 @@ class VersioningService {
       if (response.statusCode == 200) {
         return AppVersion.fromJson(response.data);
       } else {
-        throw Exception("Failed to check version: ${response.statusCode}");
+        return _createFallbackResult();
       }
-    } on DioException catch (e) {
-      throw Exception("Connection error: ${e.message}");
+    } on DioException {
+      return _createFallbackResult();
     }
+  }
+
+  AppVersion _createFallbackResult() {
+
+    return AppVersion(
+      hasUpdate: false,
+      forceUpdate: false,
+      message: "The version already updated",
+      latestVersion: null,
+      downloadUrl: null,
+    );
   }
 
   Future<File> downloadInstaller(String url, Function(int, int) onReceiveProgress) async {

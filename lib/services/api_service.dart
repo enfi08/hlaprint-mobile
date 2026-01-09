@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:sentry/sentry.dart';
-import 'package:hlaprint/models/user_model.dart';
-import 'package:hlaprint/services/auth_service.dart';
 import 'package:http/http.dart' as http;
+
+import 'package:Hlaprint/models/user_model.dart';
+import 'package:Hlaprint/services/auth_service.dart';
 
 class ApiService {
   final AuthService _authService = AuthService();

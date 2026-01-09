@@ -1,30 +1,15 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:hlaprint/screens/home_page.dart';
-import 'package:hlaprint/screens/login_screen.dart';
-import 'package:hlaprint/services/MyHttpOverrides.dart';
-import 'package:hlaprint/services/auth_service.dart';
-import 'package:hlaprint/utils/migration_helper.dart';
+import 'package:Hlaprint/screens/home_page.dart';
+import 'package:Hlaprint/screens/login_screen.dart';
+import 'package:Hlaprint/services/MyHttpOverrides.dart';
+import 'package:Hlaprint/services/auth_service.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await performWindowsDataMigration();
-
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    bool isSslEnabled = prefs.getBool('ssl_enabled') ?? true;
-
-    debugPrint("LOG: SSL Config: ${isSslEnabled ? 'ENABLED (Secure)' : 'DISABLED (Bypass)'}");
-
-    if (!isSslEnabled) {
-      HttpOverrides.global = MyHttpOverrides();
-    }
-  } catch (e) {
-    debugPrint("LOG Error: $e");
-  }
+  HttpOverrides.global = MyHttpOverrides();
 
   await SentryFlutter.init(
         (options) {

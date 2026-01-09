@@ -2,11 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:hlaprint/screens/home_page.dart';
-import 'package:hlaprint/services/api_service.dart';
-import 'package:hlaprint/models/user_model.dart';
+import 'package:Hlaprint/screens/home_page.dart';
+import 'package:Hlaprint/services/api_service.dart';
+import 'package:Hlaprint/models/user_model.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -24,7 +24,6 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isPasswordVisible = false;
   String _appVersion = '';
   List<Map<String, String>> _savedAccounts = [];
-  bool _isSslEnabled = true;
   int _secretTapCount = 0;
   DateTime? _lastTapTime;
 
@@ -37,13 +36,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _loadVersionInfo() async {
     final packageInfo = await PackageInfo.fromPlatform();
-    final prefs = await SharedPreferences.getInstance();
-
-    bool sslStatus = prefs.getBool('ssl_enabled') ?? true;
 
     if (mounted) {
       setState(() {
-        _isSslEnabled = sslStatus;
         _appVersion = 'Version ${packageInfo.version} ${isStaging ? "(staging)" : ""}';
       });
     }
@@ -97,8 +92,10 @@ class _LoginScreenState extends State<LoginScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => PopScope(
-        canPop: false,
+      builder: (context) => WillPopScope(
+        onWillPop: () async {
+          return false;
+        },
         child: AlertDialog(
           title: Row(
             children: [
@@ -291,14 +288,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             fontSize: 12,
                           ),
                           children: [
-                            TextSpan(text: _appVersion),
-                            if (!_isSslEnabled)
-                              const TextSpan(
-                                text: ' (unsecured mode)',
-                                style: TextStyle(
-                                  color: Colors.red,
-                                ),
-                              ),
+                            TextSpan(text: _appVersion)
                           ],
                         ),
                         textAlign: TextAlign.center,

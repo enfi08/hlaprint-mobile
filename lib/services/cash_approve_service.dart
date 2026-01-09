@@ -1,8 +1,8 @@
 import 'package:dio/dio.dart';
-import 'package:hlaprint/constants.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:sentry/sentry.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:hlaprint/services/auth_service.dart';
+import 'package:Hlaprint/services/auth_service.dart';
 
 class CashApproveService {
   final AuthService _authService = AuthService();

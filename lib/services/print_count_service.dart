@@ -1,6 +1,6 @@
 import 'package:dio/dio.dart';
-import 'package:hlaprint/constants.dart';
-import 'package:hlaprint/services/auth_service.dart';
+import 'package:Hlaprint/constants.dart';
+import 'package:Hlaprint/services/auth_service.dart';
 import 'package:sentry/sentry.dart';
 
 class PrintCountService {
