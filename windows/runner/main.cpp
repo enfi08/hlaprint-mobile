@@ -16,8 +16,18 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+#define WM_FLUTTER_PRINT_EVENT (WM_USER + 101)
 
 std::unique_ptr<flutter::MethodChannel<>> g_channel;
+
+struct PrintEventData {
+    int type; // 1 = Job Completed, 2 = Status Update
+    int printJobId;
+    int totalPages;
+    std::string statusMsg;
+};
+
+DWORD g_mainThreadId = 0;
 
 void MonitorPrintJob(HANDLE hPrinter, DWORD jobId, int printJobId, int totalPages) {
     OutputDebugStringA(("[MonitorJob] Polling job via EnumJobs (JOB_INFO_2), JobId=" + std::to_string(jobId) + "\n").c_str());
@@ -54,16 +64,11 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD jobId, int printJobId, int totalPage
                     OutputDebugStringA(dbg.c_str());
 
 
-                    if (g_channel) {
-                        flutter::EncodableMap args = {
-                            {flutter::EncodableValue("printJobId"), flutter::EncodableValue(printJobId)},
-                            {flutter::EncodableValue("totalPages"), flutter::EncodableValue(totalPages)}
-                        };
-                        g_channel->InvokeMethod(
-                            "onPrintJobCompleted",
-                            std::make_unique<flutter::EncodableValue>(args)
-                        );
-                    }
+                    PrintEventData* data = new PrintEventData();
+                    data->type = 1; // 1 = Tipe Job Selesai
+                    data->printJobId = printJobId;
+                    data->totalPages = totalPages;
+                    ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
                     alreadyReported = true;
                     free(pJobs);
                     ClosePrinter(hPrinter);
@@ -78,12 +83,12 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD jobId, int printJobId, int totalPage
         if (!found) {
             OutputDebugStringA("[MonitorJob] Job tidak ditemukan di spooler, anggap sudah selesai/cancel.\n");
             if (!alreadyReported) {
-                if (g_channel) {
-                    g_channel->InvokeMethod(
-                        "onPrintJobCompleted",
-                        std::make_unique<flutter::EncodableValue>(printJobId)
-                    );
-                }
+                PrintEventData* data = new PrintEventData();
+                data->type = 1; // 1 = Tipe Job Selesai
+                data->printJobId = printJobId;
+                data->totalPages = totalPages;
+
+                ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
             }
             ClosePrinter(hPrinter);
             return;
@@ -109,11 +114,13 @@ void MonitorPrinterStatus(const std::wstring& printerName) {
             PRINTER_INFO_6* pInfo6 = (PRINTER_INFO_6*)malloc(needed);
             if (GetPrinterW(hPrinter, 6, (LPBYTE)pInfo6, needed, &needed)) {
                 std::string status = (pInfo6->dwStatus & PRINTER_STATUS_OFFLINE) ? "Offline" : "Online";
-                if (g_channel) {
-                    OutputDebugStringA("Kirim status awal.\n");
-                    g_channel->InvokeMethod("onPrinterStatus",
-                        std::make_unique<flutter::EncodableValue>(status));
-                }
+                OutputDebugStringA("Kirim status awal via PostThreadMessage.\n");
+
+                PrintEventData* data = new PrintEventData();
+                data->type = 2; // 2 = Tipe Status Update
+                data->statusMsg = status;
+
+                ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
             }
             free(pInfo6);
         }
@@ -143,11 +150,13 @@ void MonitorPrinterStatus(const std::wstring& printerName) {
                 PRINTER_INFO_6* pInfo6 = (PRINTER_INFO_6*)malloc(needed);
                 if (GetPrinterW(hPrinter, 6, (LPBYTE)pInfo6, needed, &needed)) {
                     std::string status = (pInfo6->dwStatus & PRINTER_STATUS_OFFLINE) ? "Offline" : "Online";
-                    if (g_channel) {
-                        OutputDebugStringA("Kirim status looping.\n");
-                        g_channel->InvokeMethod("onPrinterStatus",
-                            std::make_unique<flutter::EncodableValue>(status));
-                    }
+                    OutputDebugStringA("Kirim status looping via PostThreadMessage.\n");
+
+                    PrintEventData* data = new PrintEventData();
+                    data->type = 2; // 2 = Tipe Status Update
+                    data->statusMsg = status;
+
+                    ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
                 }
                 free(pInfo6);
             }
@@ -168,6 +177,72 @@ void MonitorPrinterStatus(const std::wstring& printerName) {
     ClosePrinter(hPrinter);
 }
 
+bool HasContentInMargins(PopplerPage* page, double pdfW, double pdfH, double mL, double mT, double mR, double mB) {
+    int w = (int)pdfW;
+    int h = (int)pdfH;
+
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+    cairo_t* cr = cairo_create(surface);
+
+    cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    cairo_paint(cr);
+
+    poppler_page_render(page, cr);
+
+    cairo_surface_flush(surface);
+    unsigned char* data = cairo_image_surface_get_data(surface);
+    int stride = cairo_image_surface_get_stride(surface);
+
+    bool hasContent = false;
+
+    int iML = (int)mL;
+    int iMT = (int)mT;
+    int iMR = (int)mR;
+    int iMB = (int)mB;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < iML && x < w; x++) {
+            uint32_t* pixel = (uint32_t*)(data + y * stride + x * 4);
+            if ((*pixel & 0x00FFFFFF) != 0x00FFFFFF) {
+                hasContent = true; goto cleanup;
+            }
+        }
+    }
+
+    for (int y = 0; y < iMT && y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t* pixel = (uint32_t*)(data + y * stride + x * 4);
+            if ((*pixel & 0x00FFFFFF) != 0x00FFFFFF) {
+                hasContent = true; goto cleanup;
+            }
+        }
+    }
+
+    for (int y = 0; y < h; y++) {
+        for (int x = (w - iMR); x < w; x++) {
+            if (x < 0) continue;
+            uint32_t* pixel = (uint32_t*)(data + y * stride + x * 4);
+            if ((*pixel & 0x00FFFFFF) != 0x00FFFFFF) {
+                hasContent = true; goto cleanup;
+            }
+        }
+    }
+
+    for (int y = (h - iMB); y < h; y++) {
+        if (y < 0) continue;
+        for (int x = 0; x < w; x++) {
+            uint32_t* pixel = (uint32_t*)(data + y * stride + x * 4);
+            if ((*pixel & 0x00FFFFFF) != 0x00FFFFFF) {
+                hasContent = true; goto cleanup;
+            }
+        }
+    }
+
+cleanup:
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    return hasContent;
+}
 
 void RenderPageBorderless(HDC hdc, PopplerPage* page) {
     double width_points = 0.0, height_points = 0.0;
@@ -178,11 +253,76 @@ void RenderPageBorderless(HDC hdc, PopplerPage* page) {
     int offsetY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
     int physicalW = GetDeviceCaps(hdc, PHYSICALWIDTH);
     int physicalH = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+    int resX = GetDeviceCaps(hdc, HORZRES);
+    int resY = GetDeviceCaps(hdc, VERTRES);
 
-    // Hitung skala supaya pas dengan ukuran fisik kertas penuh
-    double scale_x = (double)physicalW / (width_points > 0 ? width_points : 1.0);
-    double scale_y = (double)physicalH / (height_points > 0 ? height_points : 1.0);
-    double scale = std::min(scale_x, scale_y);
+    int physRightMargin = physicalW - resX - offsetX;
+    int physBottomMargin = physicalH - resY - offsetY;
+
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+
+    double mLeftPts = (double)offsetX * 72.0 / dpiX;
+    double mTopPts = (double)offsetY * 72.0 / dpiY;
+    double mRightPts = (double)physRightMargin * 72.0 / dpiX;
+    double mBottomPts = (double)physBottomMargin * 72.0 / dpiY;
+    bool contentInDangerZone = false;
+
+    if (offsetX > 0 || offsetY > 0 || physRightMargin > 0 || physBottomMargin > 0) {
+        contentInDangerZone = HasContentInMargins(page, width_points, height_points, mLeftPts, mTopPts, mRightPts, mBottomPts);
+    }
+
+    double scale_x, scale_y;
+    double trans_x = 0, trans_y = 0;
+
+    if (contentInDangerZone) {
+
+        OutputDebugStringA("[Render] Konten terdeteksi di margin. Menggunakan mode FIT TO PAGE.\n");
+
+        double paperCenterX = (double)physicalW / 2.0;
+        double paperCenterY = (double)physicalH / 2.0;
+
+        double distCenterToLeft = paperCenterX - (double)offsetX;
+        double distCenterToRight = ((double)physicalW - (double)physRightMargin) - paperCenterX;
+
+        double safeSymmetricW = std::min(distCenterToLeft, distCenterToRight) * 2.0;
+
+        double distCenterToTop = paperCenterY - (double)offsetY;
+        double distCenterToBottom = ((double)physicalH - (double)physBottomMargin) - paperCenterY;
+        double safeSymmetricH = std::min(distCenterToTop, distCenterToBottom) * 2.0;
+
+        scale_x = safeSymmetricW / width_points;
+        scale_y = safeSymmetricH / height_points;
+
+        double scale = std::min(scale_x, scale_y);
+        scale_x = scale;
+        scale_y = scale;
+
+        double finalW = width_points * scale;
+        double finalH = height_points * scale;
+
+        trans_x = (paperCenterX - (finalW / 2.0)) - (double)offsetX;
+        trans_y = (paperCenterY - (finalH / 2.0)) - (double)offsetY;
+
+        // Debug info untuk cek simetri
+        std::string debugMsg = "[Render] PhysW:" + std::to_string(physicalW) +
+            " OffL:" + std::to_string(offsetX) +
+            " OffR:" + std::to_string(physRightMargin) +
+            " -> SafeW:" + std::to_string((int)safeSymmetricW) + "\n";
+        OutputDebugStringA(debugMsg.c_str());
+
+    }
+    else {
+
+        scale_x = (double)physicalW / (width_points > 0 ? width_points : 1.0);
+        scale_y = (double)physicalH / (height_points > 0 ? height_points : 1.0);
+        double scale = std::min(scale_x, scale_y);
+        scale_x = scale;
+        scale_y = scale;
+
+        trans_x = -offsetX;
+        trans_y = -offsetY;
+    }
 
     // Buat surface Cairo untuk rendering
     cairo_surface_t* surface = cairo_win32_printing_surface_create(hdc);
@@ -191,10 +331,10 @@ void RenderPageBorderless(HDC hdc, PopplerPage* page) {
     cairo_save(cr);
 
     // Geser canvas agar margin hardware dikompensasi
-    cairo_translate(cr, -offsetX, -offsetY);
+    cairo_translate(cr, trans_x, trans_y);
 
     // Scale konten PDF ke ukuran fisik
-    cairo_scale(cr, scale, scale);
+    cairo_scale(cr, scale_x, scale_y);
 
     // Render halaman
     poppler_page_render_for_printing(page, cr);
@@ -504,6 +644,8 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     _In_ wchar_t* command_line, _In_ int show_command) {
+    g_mainThreadId = ::GetCurrentThreadId();
+
     if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
         CreateAndAttachConsole();
     }
@@ -531,6 +673,25 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
     ::MSG msg;
     while (::GetMessage(&msg, nullptr, 0, 0)) {
+        if (msg.message == WM_FLUTTER_PRINT_EVENT) {
+            PrintEventData* data = (PrintEventData*)msg.wParam;
+
+            if (data && g_channel) {
+                if (data->type == 1) { // Job Completed
+                    flutter::EncodableMap args = {
+                        {flutter::EncodableValue("printJobId"), flutter::EncodableValue(data->printJobId)},
+                        {flutter::EncodableValue("totalPages"), flutter::EncodableValue(data->totalPages)}
+                    };
+                    g_channel->InvokeMethod("onPrintJobCompleted", std::make_unique<flutter::EncodableValue>(args));
+                }
+                else if (data->type == 2) { // Status Update
+                    g_channel->InvokeMethod("onPrinterStatus", std::make_unique<flutter::EncodableValue>(data->statusMsg));
+                }
+
+                delete data;
+            }
+            continue;
+        }
         ::TranslateMessage(&msg);
         ::DispatchMessage(&msg);
     }

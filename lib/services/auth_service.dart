@@ -31,6 +31,9 @@ class AuthService {
       await prefs.remove(tokenKey);
       await prefs.remove(userRoleKey);
       await prefs.remove(shopIdKey);
+      await prefs.remove(userIdKey);
+      await prefs.remove(nameKey);
+      await prefs.remove(emailKey);
     } catch (e) {
       debugPrint("AuthService Delete Error: $e");
     }

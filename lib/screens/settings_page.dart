@@ -170,6 +170,8 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _checkForUpdate() async {
     if (!Platform.isWindows) return;
 
+    if (_rawVersion.isEmpty) return;
+
     setState(() => _isCheckingUpdate = true);
 
     try {
@@ -480,8 +482,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     icon: _isCheckingUpdate
                         ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.system_update),
-                    label: Text(_isCheckingUpdate ? 'Checking...' : 'Check for Updates'),
-                    onPressed: _isCheckingUpdate ? null : _checkForUpdate,
+                    label: Text(_isCheckingUpdate
+                        ? 'Checking...'
+                        : (_rawVersion.isEmpty ? 'Loading Version...' : 'Check for Updates')
+                    ),
+                    onPressed: (_isCheckingUpdate || _rawVersion.isEmpty)
+                        ? null
+                        : _checkForUpdate,
                   ),
                 ),
               ],
