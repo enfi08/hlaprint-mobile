@@ -4,7 +4,9 @@ import 'package:Hlaprint/screens/home_page.dart';
 import 'package:Hlaprint/screens/login_screen.dart';
 import 'package:Hlaprint/services/MyHttpOverrides.dart';
 import 'package:Hlaprint/services/auth_service.dart';
+import 'package:Hlaprint/constants.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,14 +21,27 @@ void main() async {
       options.enableAppHangTracking = false;
     },
     appRunner: () async {
+      final prefs = await SharedPreferences.getInstance();
       String initialRoute = '/login';
 
       try {
+        final savedUserId = prefs.getString(userIdKey);
+        final savedName = prefs.getString(nameKey);
+        final savedEmail = prefs.getString(emailKey);
         final authService = AuthService();
         final token = await authService.getToken();
 
         if (token != null) {
           initialRoute = '/home';
+        }
+        if (savedUserId != null || savedName != null || savedEmail != null) {
+          Sentry.configureScope((scope) {
+            scope.setUser(SentryUser(
+              id: savedUserId,
+              username: savedName,
+              email: savedEmail,
+            ));
+          });
         }
       } catch (e, stackTrace) {
         debugPrint("ERROR INITIALIZATION: $e");

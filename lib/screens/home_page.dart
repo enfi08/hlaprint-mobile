@@ -68,6 +68,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _loadCachedUserData();
     _loadUserRoleAndData();
     _startAutoRefresh();
     _startAutoUpdateCheck();
@@ -84,30 +85,41 @@ class _HomePageState extends State<HomePage> {
         });
       } else if (call.method == "onPrintJobCompleted") {
         setState(() {
-          final Map<Object?, Object?>? args = call.arguments;
+          final dynamic args = call.arguments;
+
+          int jobId;
+          int totalPages = 0;
           if (args is Map) {
-            final int jobId = args['printJobId'] as int;
-            final int totalPages = args['totalPages'] as int;
-
-            if (jobId == -1 || jobId == -2) {
-              debugPrint('print job Invoice on Separator');
-              return;
-            }
-            int delaySeconds = 0;
-            if (totalPages > 0) {
-              delaySeconds = 15;
-              if (totalPages > 1) {
-                delaySeconds += (totalPages - 1) * 3;
-              }
-            }
-            debugPrint('Print job $jobId completed by OS. Starting delay for $totalPages pages.');
-
-            // Menjalankan Timer untuk delay
-            Timer(Duration(seconds: delaySeconds), () async {
-              await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
-              debugPrint('Print job $jobId status set to Completed after $delaySeconds seconds.');
-            });
+            jobId = args['printJobId'];
+            totalPages = args['totalPages'] ?? 0;
+          } else if (args is int) {
+            jobId = args;
+          } else {
+            debugPrint("Format argumen tidak dikenali: $args");
+            return;
           }
+          if (jobId == -1 || jobId == -2) {
+            debugPrint('print job Invoice on Separator');
+            return;
+          }
+          int delaySeconds = 0;
+          if (totalPages > 0) {
+            delaySeconds = 15;
+            if (totalPages > 1) {
+              delaySeconds += (totalPages - 1) * 3;
+            }
+          }
+          debugPrint(
+              'Print job $jobId completed by OS. Starting delay for $totalPages pages.');
+
+          // Menjalankan Timer untuk delay
+          Timer(Duration(seconds: delaySeconds), () async {
+            await _updatePrintJobStatus(
+                jobId, 'Completed', currentStatus: 'Sent To Printer');
+            debugPrint(
+                'Print job $jobId status set to Completed after $delaySeconds seconds.');
+          });
+
         });
       }
     });
@@ -430,12 +442,30 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _loadCachedUserData() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _name = prefs.getString(nameKey) ?? '';
+      _email = prefs.getString(emailKey) ?? '';
+    });
+  }
+
   Future<void> _fetchAndSaveUserRole() async {
     try {
       final User user = await _userService.getUser();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(userRoleKey, user.role);
+      await prefs.setString(nameKey, user.name);
+      await prefs.setString(emailKey, user.email);
       await prefs.setBool(skipCashierKey, user.isSkipCashier);
+
+      Sentry.configureScope((scope) {
+        scope.setUser(SentryUser(
+          id: user.id.toString(),
+          username: user.name,
+          email: user.email,
+        ));
+      });
 
       if (mounted) {
         setState(() {
@@ -789,10 +819,8 @@ class _HomePageState extends State<HomePage> {
               final processedFilePath = p.join(
                   tempDir.path, 'processed_${p.basename(downloadedFile.path)}');
 
-              final gsPath = p.join(
-                Directory.current.path,
-                'gswin64c.exe',
-              );
+                final String execDir = p.dirname(Platform.resolvedExecutable);
+                final gsPath = p.join(execDir, 'gswin64c.exe');
 
               final gsFile = File(gsPath);
               if (!await gsFile.exists()) {
@@ -800,7 +828,24 @@ class _HomePageState extends State<HomePage> {
                     "Ghostscript not found at $gsPath. Bundling required.");
               }
 
-              final args = [
+                final args = [
+                  '-dBATCH',
+                  '-dNOPAUSE',
+                  '-dSAFER',
+                  '-sDEVICE=pdfimage24',
+                  '-r300',
+                  '-dTextAlphaBits=4',
+                  '-dGraphicsAlphaBits=4',
+                  '-dDownsampleColorImages=false',
+                  '-dDownsampleGrayImages=false',
+                  '-dDownsampleMonoImages=false',
+                  '-sOutputFile=$processedFilePath',
+                  downloadedFile.path
+                ];
+
+                /*
+                Previous arguments
+                final args = [
                   '-sDEVICE=pdfwrite',
                   '-dNoOutputFonts',
                   '-dPDFSETTINGS=/printer',
@@ -811,8 +856,9 @@ class _HomePageState extends State<HomePage> {
                   '-sOutputFile=$processedFilePath',
                   downloadedFile.path
                 ];
+                */
 
-              final result = await Process.run(gsPath, args);
+                final result = await Process.run(gsPath, args, workingDirectory: execDir);
 
               if (result.exitCode == 0) {
                 processedFile = File(processedFilePath);
@@ -1027,14 +1073,13 @@ class _HomePageState extends State<HomePage> {
 
       final outputPdf = File(p.join(tempDir.path, 'output.pdf'));
 
-      final exePath = p.join(
-        Directory.current.path,
-        'wkhtmltopdf.exe',
-      );
+      final String execDir = p.dirname(Platform.resolvedExecutable);
+      final exePath = p.join(execDir, 'wkhtmltopdf.exe');
 
       final result = await Process.run(
         exePath,
         [inputHtml.path, outputPdf.path],
+        workingDirectory: execDir,
       );
       if (result.exitCode == 0) {
         await _printInvoiceFile(printerName, outputPdf, color);
