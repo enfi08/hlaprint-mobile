@@ -49,6 +49,7 @@ class PrintJob {
   final String? code;
   final int? count;
   final String? price;
+  final String? currency;
   final String? createdAt;
 
   PrintJob({
@@ -70,6 +71,7 @@ class PrintJob {
     this.code,
     this.count,
     this.price,
+    this.currency,
     this.createdAt,
   });
 
@@ -92,6 +94,7 @@ class PrintJob {
     String? code,
     int? count,
     String? price,
+    String? currency,
     String? createdAt,
   }) {
     return PrintJob(
@@ -113,6 +116,7 @@ class PrintJob {
       code: code ?? this.code,
       count: count ?? this.count,
       price: price ?? this.price,
+      currency: currency ?? this.currency,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -137,6 +141,7 @@ class PrintJob {
       code: json['code'] as String?,
       count: json['count'] as int?,
       price: json['price'] as String?,
+      currency: json['currency'] as String?,
       createdAt: json['created_at'] as String?,
     );
   }
