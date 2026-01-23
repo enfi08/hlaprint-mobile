@@ -1,5 +1,5 @@
 
-const bool isStaging = true;
+const bool isStaging = false;
 
 const String baseUrl = isStaging ? "http://hlaprint.com:8000" : "https://hlaprint.com";
 

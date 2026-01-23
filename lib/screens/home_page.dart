@@ -1436,10 +1436,11 @@ class _HomePageState extends State<HomePage> {
         String buttonText = '';
         Color buttonColor = Colors.grey;
         IconData? buttonIcon;
+        final currency = job.currency ?? 'SAR';
         final number = job.invoiceNumber == null ? '#0' : "#${job.invoiceNumber}";
         final colorText = job.color == true ? 'Color' : 'B&W';
         final sideText = job.doubleSided ? 'Double' : 'Single';
-        final priceText = job.price != null ? '${job.price} SAR' : '-';
+        final priceText = job.price != null ? '${job.price} $currency' : '-';
 
         if (job.transactionId == null) {
           statusText = "Waiting for customers input";
@@ -1537,7 +1538,7 @@ class _HomePageState extends State<HomePage> {
                               children: [
                                 const Icon(Icons.copy, size: 18, color: Colors.grey),
                                 const SizedBox(width: 8),
-                                Text('Copies: ${job.copies}'),
+                                Text('Copies: ${job.copies ?? '-'}'),
                               ],
                             ),
                           ],
@@ -1680,7 +1681,7 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           const Icon(Icons.copy, size: 18, color: Colors.grey),
                           const SizedBox(width: 8),
-                          Text('Copies: $sideText'),
+                          Text('Copies: ${job.copies ?? '-'}'),
                         ],
                       ),
                       Row(
@@ -1864,10 +1865,11 @@ class _HomePageState extends State<HomePage> {
                         itemCount: printJobResponse!.printFiles.length,
                         itemBuilder: (context, index) {
                           final file = printJobResponse!.printFiles[index];
+                          final currency = file.currency ?? 'SAR';
                           final colorText = file.color == true ? 'Color' : 'B&W';
                           final doubleSideText = file.doubleSided ? 'Double' : 'Single';
                           final pagesRange = '${file.pagesStart} - ${file.pageEnd}';
-                          final priceText = file.price != null ? '${file.price} SAR' : '-';
+                          final priceText = file.price != null ? '${file.price} $currency' : '-';
 
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4.0),
