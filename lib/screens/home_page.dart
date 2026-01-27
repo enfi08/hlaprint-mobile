@@ -65,6 +65,8 @@ class _HomePageState extends State<HomePage> {
   final int _limit = 8;
   bool _isLoadMoreLoading = false;
   bool _hasNextPage = true;
+  bool _isGsProcessing = false;
+  double _gsProgress = 0.0;
 
   @override
   void initState() {
@@ -85,44 +87,6 @@ class _HomePageState extends State<HomePage> {
       if (call.method == "onPrinterStatus") {
         setState(() {
           _printerStatus = call.arguments; // "Online" / "Offline"
-        });
-      } else if (call.method == "onPrintJobCompleted") {
-        setState(() {
-          final dynamic args = call.arguments;
-
-          int jobId;
-          int totalPages = 0;
-          if (args is Map) {
-            jobId = args['printJobId'];
-            totalPages = args['totalPages'] ?? 0;
-          } else if (args is int) {
-            jobId = args;
-          } else {
-            debugPrint("Format argumen tidak dikenali: $args");
-            return;
-          }
-          if (jobId == -1 || jobId == -2) {
-            debugPrint('print job Invoice on Separator');
-            return;
-          }
-          int delaySeconds = 0;
-          if (totalPages > 0) {
-            delaySeconds = 15;
-            if (totalPages > 1) {
-              delaySeconds += (totalPages - 1) * 3;
-            }
-          }
-          debugPrint(
-              'Print job $jobId completed by OS. Starting delay for $totalPages pages.');
-
-          // Menjalankan Timer untuk delay
-          Timer(Duration(seconds: delaySeconds), () async {
-            await _updatePrintJobStatus(
-                jobId, 'Completed', currentStatus: 'Sent To Printer');
-            debugPrint(
-                'Print job $jobId status set to Completed after $delaySeconds seconds.');
-          });
-
         });
       }
     });
@@ -786,6 +750,170 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<bool> _runGhostscriptCommand(String inputPath, String outputPath, int timeoutSeconds, {required int startPage, required int endPage}) async {
+    final String execDir = p.dirname(Platform.resolvedExecutable);
+    final String gstPath = p.join(execDir, 'gswin64c.exe');
+
+    final args = [
+      '-dBATCH',
+      '-dNOPAUSE',
+      '-dSAFER',
+      '-sDEVICE=pdfimage24',
+      '-r300',
+      '-dTextAlphaBits=4',
+      '-dGraphicsAlphaBits=4',
+      '-dDownsampleColorImages=false',
+      '-dDownsampleGrayImages=false',
+      '-dDownsampleMonoImages=false',
+      '-dFirstPage=$startPage',
+      '-dLastPage=$endPage',
+      '-sOutputFile=$outputPath',
+      inputPath
+    ];
+
+    try {
+      final process = await Process.start(gstPath, args);
+
+      if (timeoutSeconds > 0) {
+        final exitCodeFuture = process.exitCode;
+        final timeoutFuture = Future.delayed(Duration(seconds: timeoutSeconds), () => null);
+        final result = await Future.any([exitCodeFuture, timeoutFuture]);
+
+        if (result == null) {
+          process.kill();
+          return false;
+        } else {
+          return (result as int) == 0;
+        }
+      } else {
+        final exitCode = await process.exitCode;
+        return exitCode == 0;
+      }
+
+    } catch (e) {
+      debugPrint("Exception running GS: $e");
+      return false;
+    }
+  }
+
+  Future<void> _processAndPrintStreamed(
+      File originalFile,
+      String printerName,
+      PrintJob job
+      ) async {
+    setState(() {
+      _isGsProcessing = true;
+      _gsProgress = 0.0;
+    });
+
+    final jobId = job.id;
+    final startPage = job.pagesStart;
+    final endPage = job.pageEnd;
+    const int batchSize = 10;
+    int totalPages = endPage - startPage + 1;
+    int numberOfBatches = (totalPages / batchSize).ceil();
+
+    try {
+      debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
+
+      for (int i = 0; i < numberOfBatches; i++) {
+        int currentBatchStart = startPage + (i * batchSize);
+        int currentBatchEnd = currentBatchStart + batchSize - 1;
+        if (currentBatchEnd > endPage) {
+          currentBatchEnd = endPage;
+        }
+        double progress = (i + 1) / numberOfBatches;
+        setState(() => _gsProgress = progress);
+
+        debugPrint("Processing Batch ${i + 1}/$numberOfBatches (Page $currentBatchStart - $currentBatchEnd)...");
+
+        final dir = await getTemporaryDirectory();
+        final batchOutputPath = '${dir.path}${Platform.pathSeparator}batch_${i + 1}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+
+        if (File(batchOutputPath).existsSync()) File(batchOutputPath).deleteSync();
+
+        bool success = await _runGhostscriptCommand(
+            originalFile.path,
+            batchOutputPath,
+            20,
+            startPage: currentBatchStart,
+            endPage: currentBatchEnd
+        );
+
+        if (success && File(batchOutputPath).existsSync()) {
+          debugPrint("Batch ${i + 1} Success. Sending to printer...");
+
+          await _printFile(printerName,File(batchOutputPath), job, "");
+          await Future.delayed(const Duration(seconds: 1));
+          try { File(batchOutputPath).delete(); } catch (_) {}
+        } else {
+          debugPrint("Batch ${i + 1} Failed/Timeout. Fallback to Sumatra per page...");
+          await _printWithSumatra(originalFile.path, printerName, currentBatchStart, currentBatchEnd);
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+        if (i == 0) {
+          Future.delayed(Duration(seconds: totalPages), () async {
+            try {
+              debugPrint("Timer $totalPages s finished. Updating job $jobId to 'Completed'...");
+              await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
+            } catch (e) {
+              debugPrint("Background Status Update Error: $e");
+            }
+          });
+        }
+
+        if (i == numberOfBatches - 1) {
+            debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
+            await _updatePrintJobStatus(
+                jobId, 'Sent To Printer', currentStatus: 'Processing');
+        }
+      }
+
+      setState(() => _gsProgress = 1.0);
+      debugPrint("All batches processed successfully.");
+    } catch (e) {
+      debugPrint("Pagination Print Error: $e");
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _isGsProcessing = false);
+    }
+  }
+
+  Future<bool> _printWithSumatra(String filePath, String printerName, int startPage, int endPage) async {
+    debugPrint("Attempting fallback print with SumatraPDF...");
+
+    String pageRange = (startPage == endPage) ? "$startPage" : "$startPage-$endPage";
+
+    final List<String> args = [
+      '-print-to', printerName,
+      '-print-settings', pageRange,
+      '-silent',
+      filePath
+    ];
+
+    try {
+      final String execDir = p.dirname(Platform.resolvedExecutable);
+      final exePath = p.join(execDir, 'SumatraPDF.exe');
+      final result = await Process.run(
+        exePath,
+        args,
+        workingDirectory: execDir,
+      );
+
+      if (result.exitCode == 0) {
+        debugPrint("SumatraPDF printed successfully.");
+        return true;
+      } else {
+        debugPrint("SumatraPDF failed with exit code: $exitCode");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Exception running SumatraPDF: $e");
+      return false;
+    }
+  }
+
+
   Future<void> _submitPrintJob() async {
     final prefs = await SharedPreferences.getInstance();
     final bwPrinterName = prefs.getString(printerNameKey) ?? "";
@@ -886,77 +1014,11 @@ class _HomePageState extends State<HomePage> {
               SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
             );
 
-            File fileToPrint = downloadedFile;
             if (Platform.isWindows) {
-              File? processedFile;
-              // --- START: PRE-PROCESSING (GHOSTSCRIPT) ---
-              try {
-                final tempDir = await Directory.systemTemp.createTemp();
-                final processedFilePath = p.join(tempDir.path,
-                    'processed_${p.basename(downloadedFile.path)}');
-
-                final String execDir = p.dirname(Platform.resolvedExecutable);
-                final gsPath = p.join(execDir, 'gswin64c.exe');
-
-                final gsFile = File(gsPath);
-                if (!await gsFile.exists()) {
-                  throw Exception(
-                      "Ghostscript not found at $gsPath. Bundling required.");
-                }
-
-                final args = [
-                  '-dBATCH',
-                  '-dNOPAUSE',
-                  '-dSAFER',
-                  '-sDEVICE=pdfimage24',
-                  '-r300',
-                  '-dTextAlphaBits=4',
-                  '-dGraphicsAlphaBits=4',
-                  '-dDownsampleColorImages=false',
-                  '-dDownsampleGrayImages=false',
-                  '-dDownsampleMonoImages=false',
-                  '-sOutputFile=$processedFilePath',
-                  downloadedFile.path
-                ];
-
-                /*
-                Previous arguments
-                final args = [
-                  '-sDEVICE=pdfwrite',
-                  '-dNoOutputFonts',
-                  '-dPDFSETTINGS=/printer',
-                  '-dCompatibilityLevel=1.4',
-                  '-dNOPAUSE',
-                  '-dBATCH',
-                  '-dSAFER',
-                  '-sOutputFile=$processedFilePath',
-                  downloadedFile.path
-                ];
-                */
-
-                final result = await Process.run(gsPath, args, workingDirectory: execDir);
-
-                if (result.exitCode == 0) {
-                  processedFile = File(processedFilePath);
-                  fileToPrint = processedFile;
-                  debugPrint(
-                      "File pre-processed successfully with Ghostscript.");
-                }
-              } catch (e, s) {
-                debugPrint("Error during Ghostscript pre-processing: $e");
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                        "Error during Ghostscript pre-processing: $e"),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-                // await Sentry.captureException(e, stackTrace: s);
-              }
-              // --- END: PRE-PROCESSING (GHOSTSCRIPT) ---
+              await _processAndPrintStreamed(downloadedFile, selectedPrinter, job);
+            } else {
+              await _printFile(selectedPrinter, downloadedFile, job, ipPrinter);
             }
-            // Kirim ke native code dan tunggu sampai selesai
-            await _printFile(selectedPrinter, fileToPrint, job, ipPrinter);
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -1486,8 +1548,6 @@ class _HomePageState extends State<HomePage> {
         if (result == 'success') {
           debugPrint('Cetak berhasil!');
         } else if (result == 'Sent To Printer') {
-          await _updatePrintJobStatus(
-              job.id, 'Sent To Printer', currentStatus: job.status);
           debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2398,49 +2458,74 @@ class _HomePageState extends State<HomePage> {
             ),
           );
           final userHeader = _buildUserInfoHeader();
-          if (constraints.maxWidth > 600) {
-            return Row(
-              children: [
-                Expanded(
-                  flex: 1,
-                  child: Container(
-                    color: hexToColor(buttonBlue),
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(20.0),
-                        child: Image.asset(
-                          'assets/images/printer.jpeg',
-                          fit: BoxFit.contain,
+          return Column(
+            children: [
+              Expanded(
+                child: constraints.maxWidth > 600
+                    ? Row(children: [
+                  Expanded(
+                    flex: 1,
+                    child: Container(
+                      color: hexToColor(buttonBlue),
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20.0),
+                          child: Image.asset(
+                            'assets/images/printer.jpeg',
+                            fit: BoxFit.contain,
+                          ),
                         ),
                       ),
                     ),
                   ),
+                  const VerticalDivider(thickness: 1, width: 1),
+                  Expanded(
+                    flex: 1,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        userHeader,
+                        const SizedBox(height: 16),
+                        centeredKeypad,
+                      ],
+                    ),
+                  ),
+                ])
+                    : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    userHeader,
+                    const SizedBox(height: 16),
+                    centeredKeypad,
+                  ],
                 ),
-                const VerticalDivider(thickness: 1, width: 1),
-                Expanded(
-                  flex: 1,
+              ),
+
+              if (_isGsProcessing) ...[
+                const Divider(height: 1),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                  color: Colors.white,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      userHeader,
-                      const SizedBox(height: 16),
-                      centeredKeypad,
+                      Text(
+                        "Processing Print Job... ${(_gsProgress * 100).toInt()}%",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 12, color: Colors.black),
+                      ),
+                      const SizedBox(height: 4),
+                      LinearProgressIndicator(
+                        value: _gsProgress,
+                        backgroundColor: Colors.grey[300],
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                      ),
                     ],
                   ),
                 ),
               ],
-            );
-          } else {
-            // Tampilan Mobile/Small Screen
-            return Column( // Kolom untuk menumpuk Header di atas Keypad
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                userHeader, // Header di paling atas
-                const SizedBox(height: 16),
-                centeredKeypad, // Keypad mengambil sisa ruang dan terpusat
-              ],
-            );
-          }
+            ],
+          );
         },
       ),
     );
