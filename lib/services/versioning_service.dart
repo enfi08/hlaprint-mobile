@@ -44,21 +44,37 @@ class VersioningService {
       downloadUrl: null,
     );
   }
-
-  Future<File> downloadInstaller(String url, Function(int, int) onReceiveProgress) async {
+  
+  Future<File> downloadInstaller(
+      String url,
+      Function(int, int) onReceiveProgress,
+      {CancelToken? cancelToken}
+      ) async {
     try {
       final tempDir = await getTemporaryDirectory();
-      final String savePath = '${tempDir.path}\\installer_update.exe';
+      final String savePath = '${tempDir.path}\\installer_update_${DateTime.now().millisecondsSinceEpoch}.exe';
 
       await _dio.download(
         url,
         savePath,
         onReceiveProgress: onReceiveProgress,
+        cancelToken: cancelToken,
       );
 
       return File(savePath);
     } catch (e) {
       throw Exception("Download failed: $e");
+    }
+  }
+
+  Future<void> runSilentInstaller(File installerFile) async {
+    if (await installerFile.exists()) {
+      await Process.start(
+        installerFile.path,
+        ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+        mode: ProcessStartMode.detached,
+      );
+      exit(0);
     }
   }
 }
