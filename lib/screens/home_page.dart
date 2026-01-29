@@ -12,7 +12,6 @@ import 'package:hlaprint/services/print_job_service.dart';
 import 'package:hlaprint/services/order_list_service.dart';
 import 'package:hlaprint/services/user_service.dart';
 import 'package:hlaprint/services/versioning_service.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sentry/sentry.dart';
 import 'package:flutter/services.dart';
@@ -55,7 +54,6 @@ class _HomePageState extends State<HomePage> {
   String? _userRole;
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
-  Timer? _autoUpdateTimer;
   int _secretTapCount = 0;
   DateTime? _lastTapTime;
 
@@ -67,6 +65,8 @@ class _HomePageState extends State<HomePage> {
   bool _hasNextPage = true;
   bool _isGsProcessing = false;
   double _gsProgress = 0.0;
+  int _currentCopyProcessing = 1;
+  int _totalCopiesProcessing = 1;
 
   @override
   void initState() {
@@ -74,9 +74,6 @@ class _HomePageState extends State<HomePage> {
     _loadCachedUserData();
     _loadUserRoleAndData();
     _startAutoRefresh();
-    if (Platform.isWindows) {
-      _startAutoUpdateCheck();
-    }
     _scrollController.addListener(_onScroll);
 
     for (var controller in _pinControllers) {
@@ -91,169 +88,6 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
-  }
-
-  void _startAutoUpdateCheck() {
-    _autoUpdateTimer?.cancel();
-    _checkWindowsUpdate();
-
-    _autoUpdateTimer = Timer.periodic(const Duration(hours: 1), (timer) {
-      _checkWindowsUpdate();
-    });
-  }
-
-  Future<void> _checkWindowsUpdate() async {
-    if (!Platform.isWindows) return;
-
-    try {
-      final packageInfo = await PackageInfo.fromPlatform();
-      final currentVersion = packageInfo.version;
-
-      final result = await _versioningService.checkVersion(currentVersion);
-
-      if (result.hasUpdate) {
-        final String latestVersion = result.latestVersion ?? 'Unknown';
-        final String downloadUrl = result.downloadUrl ?? '';
-        final String message = result.message ?? 'New version available';
-
-        _processUpdateUI(latestVersion, downloadUrl, message, result.forceUpdate);
-      }
-    } catch (e) {
-      debugPrint("Auto-update check failed: $e");
-    }
-  }
-
-  Future<void> _processUpdateUI(String latestVersion, String url, String msg, bool forceUpdate) async {
-    final prefs = await SharedPreferences.getInstance();
-
-    if (!forceUpdate) {
-      final String ignoredVersion = prefs.getString('update_ignored_version') ?? '';
-      int laterCount = prefs.getInt('update_later_count') ?? 0;
-
-      if (latestVersion != ignoredVersion) {
-        laterCount = 0;
-        await prefs.setInt('update_later_count', 0);
-        await prefs.setString('update_ignored_version', latestVersion);
-      }
-
-      if (laterCount >= 3) {
-        return;
-      }
-    }
-
-    if (!mounted) return;
-
-    _autoUpdateTimer?.cancel();
-    _autoUpdateTimer = null;
-
-    ScaffoldMessenger.of(context).clearMaterialBanners();
-
-    ScaffoldMessenger.of(context).showMaterialBanner(
-      MaterialBanner(
-        content: Text('$msg (v$latestVersion)'),
-        leading: const Icon(Icons.system_update, color: Colors.blue),
-        backgroundColor: Colors.yellow[50],
-        forceActionsBelow: false,
-        actions: [
-          if (!forceUpdate)
-            TextButton(
-              onPressed: () => _handleUpdateLater(latestVersion),
-              child: const Text('Later'),
-            ),
-          ElevatedButton(
-            onPressed: () => _handleUpdateInstall(url),
-            child: const Text('Install'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _handleUpdateLater(String version) async {
-    ScaffoldMessenger.of(context).clearMaterialBanners();
-
-    final prefs = await SharedPreferences.getInstance();
-    int currentCount = prefs.getInt('update_later_count') ?? 0;
-
-    await prefs.setInt('update_later_count', currentCount + 1);
-    await prefs.setString('update_ignored_version', version);
-
-    debugPrint("Update v$version skipped. Count: ${currentCount + 1}");
-    _startAutoUpdateCheck();
-  }
-
-  Future<void> _handleUpdateInstall(String url) async {
-    ScaffoldMessenger.of(context).clearMaterialBanners();
-
-    ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) {
-        return PopScope(
-          canPop: false,
-          child: AlertDialog(
-            title: const Text('Downloading Update'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Downloading update package, please wait...'),
-                const SizedBox(height: 20),
-                ValueListenableBuilder<double>(
-                  valueListenable: progressNotifier,
-                  builder: (context, value, child) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        LinearProgressIndicator(value: value),
-                        const SizedBox(height: 8),
-                        Text(
-                          '${(value * 100).toStringAsFixed(0)}%',
-                          textAlign: TextAlign.end,
-                          style: const TextStyle(fontSize: 12, color: Colors.grey),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-
-    try {
-      File installer = await _versioningService.downloadInstaller(url, (received, total) {
-        if (total != -1) {
-          progressNotifier.value = received / total;
-        }
-      });
-
-      if (await installer.exists()) {
-        debugPrint("Running installer: ${installer.path}");
-
-        await Process.start(
-          installer.path,
-          [],
-          mode: ProcessStartMode.detached,
-        );
-
-        exit(0);
-      }
-    } catch (e) {
-      if (mounted && Navigator.canPop(context)) {
-        Navigator.of(context).pop();
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Update failed: $e"), backgroundColor: Colors.red),
-        );
-      }
-    }
   }
 
   Future<void> _loadUserRoleAndData() async {
@@ -586,7 +420,6 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _stopAutoRefresh();
-    _autoUpdateTimer?.cancel();
     _scaffoldMessenger?.clearMaterialBanners();
     _scrollController.dispose();
     for (var controller in _pinControllers) {
@@ -801,71 +634,91 @@ class _HomePageState extends State<HomePage> {
       String printerName,
       PrintJob job
       ) async {
-    setState(() {
-      _isGsProcessing = true;
-      _gsProgress = 0.0;
-    });
-
     final jobId = job.id;
     final startPage = job.pagesStart;
     final endPage = job.pageEnd;
+    final copies = job.copies ?? 1;
     const int batchSize = 10;
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
+    setState(() {
+      _isGsProcessing = true;
+      _gsProgress = 0.0;
+      _totalCopiesProcessing = copies;
+      _currentCopyProcessing = 1;
+    });
 
     try {
       debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
 
-      for (int i = 0; i < numberOfBatches; i++) {
-        int currentBatchStart = startPage + (i * batchSize);
-        int currentBatchEnd = currentBatchStart + batchSize - 1;
-        if (currentBatchEnd > endPage) {
-          currentBatchEnd = endPage;
-        }
-        double progress = (i + 1) / numberOfBatches;
-        setState(() => _gsProgress = progress);
-
-        debugPrint("Processing Batch ${i + 1}/$numberOfBatches (Page $currentBatchStart - $currentBatchEnd)...");
-
-        final dir = await getTemporaryDirectory();
-        final batchOutputPath = '${dir.path}${Platform.pathSeparator}batch_${i + 1}_${DateTime.now().millisecondsSinceEpoch}.pdf';
-
-        if (File(batchOutputPath).existsSync()) File(batchOutputPath).deleteSync();
-
-        bool success = await _runGhostscriptCommand(
-            originalFile.path,
-            batchOutputPath,
-            20,
-            startPage: currentBatchStart,
-            endPage: currentBatchEnd
-        );
-
-        if (success && File(batchOutputPath).existsSync()) {
-          debugPrint("Batch ${i + 1} Success. Sending to printer...");
-
-          await _printFile(printerName,File(batchOutputPath), job, "");
-          await Future.delayed(const Duration(seconds: 1));
-          try { File(batchOutputPath).delete(); } catch (_) {}
-        } else {
-          debugPrint("Batch ${i + 1} Failed/Timeout. Fallback to Sumatra per page...");
-          await _printWithSumatra(originalFile.path, printerName, currentBatchStart, currentBatchEnd);
-          await Future.delayed(const Duration(milliseconds: 200));
-        }
-        if (i == 0) {
-          Future.delayed(Duration(seconds: totalPages), () async {
-            try {
-              debugPrint("Timer $totalPages s finished. Updating job $jobId to 'Completed'...");
-              await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
-            } catch (e) {
-              debugPrint("Background Status Update Error: $e");
-            }
+      for (int c = 0; c < copies; c++) {
+        if (mounted) {
+          setState(() {
+            _currentCopyProcessing = c + 1;
           });
         }
+        debugPrint("  > Sending Copy ${c + 1} of $copies...");
+        for (int i = 0; i < numberOfBatches; i++) {
+          int currentBatchStart = startPage + (i * batchSize);
+          int currentBatchEnd = currentBatchStart + batchSize - 1;
+          if (currentBatchEnd > endPage) {
+            currentBatchEnd = endPage;
+          }
+          double progress = (i + 1) / numberOfBatches;
+          setState(() => _gsProgress = progress);
 
-        if (i == numberOfBatches - 1) {
-            debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
-            await _updatePrintJobStatus(
-                jobId, 'Sent To Printer', currentStatus: 'Processing');
+          debugPrint("Processing Batch ${i +
+              1}/$numberOfBatches (Page $currentBatchStart - $currentBatchEnd)...");
+
+          final dir = await getTemporaryDirectory();
+          final batchOutputPath = '${dir.path}${Platform
+              .pathSeparator}batch_${i + 1}_${DateTime
+              .now()
+              .millisecondsSinceEpoch}.pdf';
+
+          if (File(batchOutputPath).existsSync()) {
+            File(batchOutputPath).deleteSync();
+          }
+
+          bool success = await _runGhostscriptCommand(
+              originalFile.path,
+              batchOutputPath,
+              30,
+              startPage: currentBatchStart,
+              endPage: currentBatchEnd
+          );
+
+          if (success && File(batchOutputPath).existsSync()) {
+            debugPrint("Batch ${i + 1} Success. Sending to printer...");
+
+            await _printFileForWindows(printerName, File(batchOutputPath), job);
+            await Future.delayed(const Duration(seconds: 1));
+            try {
+              File(batchOutputPath).delete();
+            } catch (_) {}
+          } else {
+            debugPrint("Batch ${i +
+                1} Failed/Timeout. Fallback to Sumatra per page...");
+            await _printWithSumatra(originalFile.path, printerName, job);
+            await Future.delayed(const Duration(milliseconds: 200));
+          }
+          if (i == 0 && i == c - 1) {
+            Future.delayed(Duration(seconds: totalPages), () async {
+              try {
+                debugPrint("Timer $totalPages s finished. Updating job $jobId to 'Completed'...");
+                await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
+              } catch (e) {
+                debugPrint("Background Status Update Error: $e");
+              }
+            });
+          }
+
+          if (i == numberOfBatches - 1 && i == c - 1) {
+              debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
+              await _updatePrintJobStatus(
+                  jobId, 'Sent To Printer', currentStatus: 'Processing');
+          }
+          if (copies > 1) await Future.delayed(const Duration(milliseconds: 150));
         }
       }
 
@@ -879,17 +732,49 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<bool> _printWithSumatra(String filePath, String printerName, int startPage, int endPage) async {
+  Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob) async {
     debugPrint("Attempting fallback print with SumatraPDF...");
 
-    String pageRange = (startPage == endPage) ? "$startPage" : "$startPage-$endPage";
+    final startPage = printJob.pagesStart;
+    final endPage = printJob.pageEnd;
+    final isDuplex = printJob.doubleSided;
+    final isColor = printJob.color ?? false;
+    final orientation = printJob.pageOrientation;
 
-    final List<String> args = [
+    debugPrint("SumatraPDF Print: Orientation=$orientation, Duplex=$isDuplex, Color=$isColor, Range=$startPage-$endPage");
+
+    List<String> settingsParts = [];
+
+    if (startPage != 0 || endPage != 0) {
+      if (startPage == endPage) {
+        settingsParts.add("$startPage");
+      } else {
+        settingsParts.add("$startPage-$endPage");
+      }
+    }
+    if (isDuplex) {
+      settingsParts.add("duplex");
+    } else {
+      settingsParts.add("simplex");
+    }
+    if (isColor) {
+      settingsParts.add("color");
+    } else {
+      settingsParts.add("monochrome");
+    }
+    settingsParts.add("fit");
+
+    String printSettings = settingsParts.join(",");
+    List<String> args = [
       '-print-to', printerName,
-      '-print-settings', pageRange,
       '-silent',
-      filePath
     ];
+
+    if (printSettings.isNotEmpty) {
+      args.add('-print-settings');
+      args.add(printSettings);
+    }
+    args.add(filePath);
 
     try {
       final String execDir = p.dirname(Platform.resolvedExecutable);
@@ -1528,49 +1413,50 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter) async {
-    if (Platform.isWindows) {
-      try {
-        final String result = await platform.invokeMethod(
-          'printPDF',
-          {
-            'printJobId': job.id,
-            'filePath': file.path,
-            'printerName': printerName,
-            'color': job.color,
-            'doubleSided': job.doubleSided,
-            'pagesStart': job.pagesStart,
-            'pageEnd': job.pageEnd,
-            'copies': job.copies,
-            'pageOrientation': job.pageOrientation,
-          },
-        );
-        if (result == 'success') {
-          debugPrint('Cetak berhasil!');
-        } else if (result == 'Sent To Printer') {
-          debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed print: $result'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      } on PlatformException catch (e, s) {
-        debugPrint("Failed to print: '${e.message}'.");
-        await Sentry.captureException(
-          e,
-          stackTrace: s,
-        );
+  Future<void> _printFileForWindows(String printerName, File file, PrintJob job) async {
+    try {
+      final String result = await platform.invokeMethod(
+        'printPDF',
+        {
+          'printJobId': job.id,
+          'filePath': file.path,
+          'printerName': printerName,
+          'color': job.color,
+          'doubleSided': job.doubleSided,
+          'pagesStart': job.pagesStart,
+          'pageEnd': job.pageEnd,
+          'copies': 1,
+          'pageOrientation': job.pageOrientation,
+        },
+      );
+      if (result == 'success') {
+        debugPrint('Cetak berhasil!');
+      } else if (result == 'Sent To Printer') {
+        debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
+      } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Print Error: ${e.message}'),
+            content: Text('Failed print: $result'),
             backgroundColor: Colors.red,
           ),
         );
       }
-    } else if (Platform.isAndroid) {
+    } on PlatformException catch (e, s) {
+      debugPrint("Failed to print: '${e.message}'.");
+      await Sentry.captureException(
+        e,
+        stackTrace: s,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Print Error: ${e.message}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter) async {
+    if (Platform.isAndroid) {
       int pageOrientation;
       if (job.pageOrientation == "auto") {
         pageOrientation = -1;
@@ -2510,7 +2396,9 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        "Processing Print Job... ${(_gsProgress * 100).toInt()}%",
+                        _totalCopiesProcessing > 1
+                            ? "Processing Print Job... ${(_gsProgress * 100).toInt()}% (Copy $_currentCopyProcessing of $_totalCopiesProcessing)"
+                            : "Processing Print Job... ${(_gsProgress * 100).toInt()}%",
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 12, color: Colors.black),
                       ),

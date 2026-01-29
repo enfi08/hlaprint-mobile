@@ -3,6 +3,7 @@ import 'package:hlaprint/constants.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:hlaprint/services/versioning_service.dart';
+import 'package:hlaprint/services/auto_update_manager.dart';
 import 'dart:io';
 
 class SettingsPage extends StatefulWidget {
@@ -20,6 +21,7 @@ class _SettingsPageState extends State<SettingsPage> {
   List<String> _printers = [];
   String? _userRole;
   bool _isSslEnabled = true;
+  bool? _autoUpdateEnabled;
   final TextEditingController _ipPrinterController = TextEditingController();
 
   bool _isCheckingUpdate = false;
@@ -39,6 +41,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSelectedPrinter();
     _loadSelectedColorPrinter();
     _loadVersionInfo();
+    _loadAutoUpdateSettings();
   }
 
   @override
@@ -52,6 +55,15 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) {
       setState(() {
         _userRole = prefs.getString(userRoleKey);
+      });
+    }
+  }
+
+  Future<void> _loadAutoUpdateSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _autoUpdateEnabled = prefs.getBool('update_automatically') ?? false;
       });
     }
   }
@@ -440,6 +452,25 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  if (Platform.isWindows && _autoUpdateEnabled != null) ...[
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text("Update Automatically"),
+                      subtitle: Text(_autoUpdateEnabled! ? "Download updates in the background without interrupting." : "Check updates manually"),
+                      value: _autoUpdateEnabled!,
+                      onChanged: (bool value) async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('update_automatically', value);
+                        setState(() {
+                          _autoUpdateEnabled = value;
+                        });
+                        if (value) {
+                          AutoUpdateManager().checkAndRunAutoUpdate();
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                  ],
                   isAndroid ? _buildAndroidSettings() : _buildDesktopSettings(),
 
                   ElevatedButton(
