@@ -638,6 +638,7 @@ class _HomePageState extends State<HomePage> {
     final startPage = job.pagesStart;
     final endPage = job.pageEnd;
     final copies = job.copies ?? 1;
+    final Map<int, String> batchCache = {};
     const int batchSize = 10;
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
@@ -671,41 +672,54 @@ class _HomePageState extends State<HomePage> {
               1}/$numberOfBatches (Page $currentBatchStart - $currentBatchEnd)...");
 
           final dir = await getTemporaryDirectory();
-          final batchOutputPath = '${dir.path}${Platform
-              .pathSeparator}batch_${i + 1}_${DateTime
-              .now()
-              .millisecondsSinceEpoch}.pdf';
+          String? batchOutputPath = batchCache[i];
+          bool isCached = batchOutputPath != null && File(batchOutputPath).existsSync();
+          if (!isCached) {
+            final newPath = '${dir.path}${Platform
+                .pathSeparator}job_${jobId}_batch_${i}_${DateTime
+                .now()
+                .millisecondsSinceEpoch}.pdf';
 
-          if (File(batchOutputPath).existsSync()) {
-            File(batchOutputPath).deleteSync();
+            if (File(newPath).existsSync()) {
+              try {
+                File(newPath).deleteSync();
+              } catch (_) {}
+            }
+
+            bool success = await _runGhostscriptCommand(
+                originalFile.path,
+                newPath,
+                30,
+                startPage: currentBatchStart,
+                endPage: currentBatchEnd
+            );
+
+            if (success && File(newPath).existsSync()) {
+              batchOutputPath = newPath;
+              batchCache[i] = newPath;
+              debugPrint("Batch ${i + 1} Generated & Cached.");
+            } else {
+              debugPrint("Batch ${i + 1} Failed/Timeout. Fallback...");
+              batchOutputPath = null;
+            }
+          } else {
+            debugPrint("Batch ${i + 1} Found in Cache. Skipping Ghostscript.");
           }
 
-          bool success = await _runGhostscriptCommand(
-              originalFile.path,
-              batchOutputPath,
-              30,
-              startPage: currentBatchStart,
-              endPage: currentBatchEnd
-          );
-
-          if (success && File(batchOutputPath).existsSync()) {
+          if (batchOutputPath != null) {
             debugPrint("Batch ${i + 1} Success. Sending to printer...");
-
             await _printFileForWindows(printerName, File(batchOutputPath), job);
-            await Future.delayed(const Duration(seconds: 1));
-            try {
-              File(batchOutputPath).delete();
-            } catch (_) {}
+            await Future.delayed(const Duration(milliseconds: 500));
           } else {
-            debugPrint("Batch ${i +
-                1} Failed/Timeout. Fallback to Sumatra per page...");
+            debugPrint("Batch ${i + 1} Failed. Fallback to Sumatra per page...");
             await _printWithSumatra(originalFile.path, printerName, job);
             await Future.delayed(const Duration(milliseconds: 200));
           }
-          if (i == 0 && i == c - 1) {
-            Future.delayed(Duration(seconds: totalPages), () async {
+          if (c == 0 && i == 0) {
+            int estimatedSeconds = totalPages * copies;
+            Future.delayed(Duration(seconds: estimatedSeconds), () async {
               try {
-                debugPrint("Timer $totalPages s finished. Updating job $jobId to 'Completed'...");
+                debugPrint("Timer $estimatedSeconds s finished. Updating job $jobId to 'Completed'...");
                 await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
               } catch (e) {
                 debugPrint("Background Status Update Error: $e");
@@ -713,7 +727,7 @@ class _HomePageState extends State<HomePage> {
             });
           }
 
-          if (i == numberOfBatches - 1 && i == c - 1) {
+          if (i == numberOfBatches - 1 && c == copies - 1) {
               debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
               await _updatePrintJobStatus(
                   jobId, 'Sent To Printer', currentStatus: 'Processing');
@@ -728,6 +742,17 @@ class _HomePageState extends State<HomePage> {
       debugPrint("Pagination Print Error: $e");
       rethrow;
     } finally {
+      debugPrint("Cleaning up temporary batch files...");
+      for (var path in batchCache.values) {
+        try {
+          final f = File(path);
+          if (f.existsSync()) {
+            f.deleteSync();
+          }
+        } catch (e) {
+          debugPrint("Error deleting temp file $path: $e");
+        }
+      }
       if (mounted) setState(() => _isGsProcessing = false);
     }
   }
