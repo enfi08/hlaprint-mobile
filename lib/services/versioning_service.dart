@@ -8,17 +8,34 @@ class VersioningService {
   final Dio _dio = Dio();
 
   Future<AppVersion> checkVersion(String currentVersion) async {
-    final url = '$baseUrl/api/check-version-win';
+    const url = '$baseUrl/api/check-version';
 
     final headers = {
       "Accept": "application/json",
     };
 
+    String platformName;
+    if (Platform.isAndroid) {
+      platformName = 'android';
+    } else if (Platform.isWindows) {
+      final String osVersion = Platform.operatingSystemVersion;
+      if (osVersion.contains('Windows 7') || osVersion.startsWith('6.1')) {
+        platformName = 'windows_7';
+      } else {
+        platformName = 'windows';
+      }
+    } else if (Platform.isMacOS) {
+      platformName = 'macos';
+    } else {
+      platformName = 'unknown';
+    }
+
     try {
       final response = await _dio.get(
         url,
         queryParameters: {
-          "current_version": currentVersion
+          "current_version": currentVersion,
+          "platform": platformName,
         },
         options: Options(headers: headers),
       );
