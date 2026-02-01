@@ -74,7 +74,7 @@ class AutoUpdateManager extends ChangeNotifier {
       _statusText = "The update is ready to be installed.";
       debugPrint("[AutoUpdate] ✅ Download Complete. File at: ${file.path}");
     } catch (e) {
-      if (CancelToken.isCancel(e as DioException)) {
+      if (e is DioException && CancelToken.isCancel(e)) {
         debugPrint("Download cancelled by user");
       } else {
         debugPrint("Download failed: $e");
