@@ -344,7 +344,7 @@ void RenderPageBorderless(HDC hdc, PopplerPage* page) {
     cairo_surface_destroy(surface);
 }
 
-bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int pagesStart, int pageEnd, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
+bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
     HANDLE hPrinter = nullptr;
     std::wstring wprinter;
     wprinter.assign(printerName.begin(), printerName.end());
@@ -510,22 +510,10 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     int num_pages = poppler_document_get_n_pages(doc);
 
     // Logika untuk menentukan rentang halaman yang akan dicetak
-    int start_index;
-    int end_index;
+    int start_index = 0;
+    int end_index = num_pages;
 
-    // Periksa validitas masukan pengguna
-    if (pagesStart <= 0 || pageEnd <= 0 || pagesStart > pageEnd || pagesStart > num_pages) {
-        // Jika input tidak valid, cetak semua halaman
-        start_index = 0;
-        end_index = num_pages;
-        OutputDebugStringA(("Masukan halaman tidak valid. Mencetak semua " + std::to_string(num_pages) + " halaman.\n").c_str());
-    }
-    else {
-        // Jika input valid, tentukan rentang yang diminta
-        start_index = pagesStart - 1;
-        end_index = pageEnd;
-        OutputDebugStringA(("Mencetak halaman dari " + std::to_string(pagesStart) + " sampai " + std::to_string(pageEnd) + ".\n").c_str());
-    }
+    OutputDebugStringA(("Mencetak full dokumen: " + std::to_string(num_pages) + " halaman.\n").c_str());
 
     // Pastikan rentang halaman tidak melebihi jumlah halaman total
     end_index = std::min(num_pages, end_index);
@@ -592,15 +580,12 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                         const auto& printer_name_val = args->find(flutter::EncodableValue("printerName"));
                         const auto& color_val = args->find(flutter::EncodableValue("color"));
                         const auto& double_sided_val = args->find(flutter::EncodableValue("doubleSided"));
-                        const auto& pages_start_val = args->find(flutter::EncodableValue("pagesStart"));
-                        const auto& page_end_val = args->find(flutter::EncodableValue("pageEnd"));
                         const auto& copies_val = args->find(flutter::EncodableValue("copies"));
                         const auto& orientation_val = args->find(flutter::EncodableValue("pageOrientation"));
                         const auto& print_job_id_val = args->find(flutter::EncodableValue("printJobId"));
 
                         if (file_path_val != args->end() && printer_name_val != args->end() &&
                             color_val != args->end() && double_sided_val != args->end() &&
-                            pages_start_val != args->end() && page_end_val != args->end() &&
                             copies_val != args->end() && orientation_val != args->end() &&
                             print_job_id_val != args->end()) {
 
@@ -608,13 +593,11 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                             std::string printerName = std::get<std::string>(printer_name_val->second);
                             bool color = std::get<bool>(color_val->second);
                             bool doubleSided = std::get<bool>(double_sided_val->second);
-                            int pagesStart = std::get<int>(pages_start_val->second);
-                            int pageEnd = std::get<int>(page_end_val->second);
                             int copies = std::get<int>(copies_val->second);
                             std::string pageOrientation = std::get<std::string>(orientation_val->second);
                             int printJobId = std::get<int>(print_job_id_val->second);
 
-                            PrintPDFFile(filePath, printerName, color, doubleSided, pagesStart, pageEnd, copies, pageOrientation, printJobId, std::move(result));
+                            PrintPDFFile(filePath, printerName, color, doubleSided, copies, pageOrientation, printJobId, std::move(result));
                             return;
                         }
                     }
