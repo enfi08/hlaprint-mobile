@@ -11,7 +11,6 @@ import 'package:hlaprint/services/print_count_service.dart';
 import 'package:hlaprint/services/print_job_service.dart';
 import 'package:hlaprint/services/order_list_service.dart';
 import 'package:hlaprint/services/user_service.dart';
-import 'package:hlaprint/services/versioning_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sentry/sentry.dart';
 import 'package:flutter/services.dart';
@@ -42,7 +41,6 @@ class _HomePageState extends State<HomePage> {
   final PrintCountService _printCountService = PrintCountService();
   final OrderListService _orderListService = OrderListService();
   final CashApproveService _cashApproveService = CashApproveService();
-  final VersioningService _versioningService = VersioningService();
   final UserService _userService = UserService();
   bool _hasCheckedLoginSave = false;
   bool _isLoading = false;
@@ -630,9 +628,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _processAndPrintStreamed(
-      File originalFile,
+      File? originalFile,
       String printerName,
-      PrintJob job
+      PrintJob job,
+      String? ipPrinter
       ) async {
     final jobId = job.id;
     final startPage = job.pagesStart;
@@ -686,13 +685,28 @@ class _HomePageState extends State<HomePage> {
               } catch (_) {}
             }
 
-            bool success = await _runGhostscriptCommand(
-                originalFile.path,
-                newPath,
-                30,
-                startPage: currentBatchStart,
-                endPage: currentBatchEnd
-            );
+            bool success = false;
+            if (Platform.isWindows) {
+              if (originalFile != null) {
+                success = await _runGhostscriptCommand(
+                    originalFile.path,
+                    newPath,
+                    30,
+                    startPage: currentBatchStart,
+                    endPage: currentBatchEnd
+                );
+              } else {
+                debugPrint("Error: Original file is missing for Windows print job.");
+                success = false;
+              }
+            } else {
+              success = await _rasterizePdfApi(
+                  job.filename,
+                  newPath,
+                  startPage: currentBatchStart,
+                  endPage: currentBatchEnd
+              );
+            }
 
             if (success && File(newPath).existsSync()) {
               batchOutputPath = newPath;
@@ -701,6 +715,18 @@ class _HomePageState extends State<HomePage> {
             } else {
               debugPrint("Batch ${i + 1} Failed/Timeout. Fallback...");
               batchOutputPath = null;
+              if (!Platform.isWindows && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Failed to print: error during process the file.'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                setState(() {
+                  _isGsProcessing = false;
+                });
+                return;
+              }
             }
           } else {
             debugPrint("Batch ${i + 1} Found in Cache. Skipping Ghostscript.");
@@ -708,9 +734,15 @@ class _HomePageState extends State<HomePage> {
 
           if (batchOutputPath != null) {
             debugPrint("Batch ${i + 1} Success. Sending to printer...");
-            await _printFileForWindows(printerName, File(batchOutputPath), job);
+            if (Platform.isWindows) {
+              await _printFileForWindows(
+                  printerName, File(batchOutputPath), job);
+            } else {
+              PrintJob batchJob = job.copyWith(copies: 1);
+              await _printFile(printerName, File(batchOutputPath), batchJob, ipPrinter ?? "");
+            }
             await Future.delayed(const Duration(milliseconds: 500));
-          } else {
+          } else if (Platform.isWindows && originalFile != null) {
             debugPrint("Batch ${i + 1} Failed. Fallback to Sumatra per page...");
             await _printWithSumatra(originalFile.path, printerName, job);
             await Future.delayed(const Duration(milliseconds: 200));
@@ -898,37 +930,30 @@ class _HomePageState extends State<HomePage> {
 
             await _updatePrintCount(job.id);
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
-            );
-
-            final String filenameToDownload = Uri
-                .parse(job.filename)
-                .pathSegments
-                .last;
-            if ((Platform.isAndroid || Platform.isMacOS) && !isStaging) {
-              downloadedFile = await rasterizePdf(
-                job.filename,
-                filenameToDownload,
-                job.pagesStart,
-                job.pageEnd
+            if (Platform.isWindows) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(
+                    'Downloading file ${i + 1} of ${response.printFiles
+                        .length}...')),
               );
-            } else {
+
+              final String filenameToDownload = Uri
+                  .parse(job.filename)
+                  .pathSegments
+                  .last;
               downloadedFile = await _printJobService.downloadFile(
                 job.filename,
                 filenameToDownload,
               );
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(
+                    'Download complete. Printing file ${i + 1} of ${response
+                        .printFiles.length}...')),
+              );
             }
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
-            );
-
-            if (Platform.isWindows) {
-              await _processAndPrintStreamed(downloadedFile, selectedPrinter, job);
-            } else {
-              await _printFile(selectedPrinter, downloadedFile, job, ipPrinter);
-            }
+            await _processAndPrintStreamed(downloadedFile, selectedPrinter, job, ipPrinter);
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -1275,26 +1300,30 @@ class _HomePageState extends State<HomePage> {
     throw Exception("Unexpected Error fetching PDF");
   }
 
-  Future<File> rasterizePdf(String url, String filename, int pageStart, int pageEnd) async {
-    final response = await http.post(
-      Uri.parse("$baseUrl/api/rasterize-pdf"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({
-        "pdf_url": url,
-        "page_start": pageStart,
-        "page_end": pageEnd
-      }),
-    );
+  Future<bool> _rasterizePdfApi(String fileUrl, String outputPath, {required int startPage, required int endPage}) async {
+    try {
+      debugPrint("Rasterizing via API: $fileUrl, pages $startPage-$endPage");
+      final response = await http.post(
+        Uri.parse("$baseUrl/api/rasterize-pdf"),
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: {
+          'pdf_url': fileUrl,
+          'start_page': startPage.toString(),
+          'end_page': endPage.toString(),
+        },
+      );
 
-    if (response.statusCode == 200) {
-      final dir = await getTemporaryDirectory();
-      final savePath = '${dir.path}/$filename';
-      final file = File(savePath);
-      await file.writeAsBytes(response.bodyBytes);
-
-      return file;
-    } else {
-      throw Exception("PDF generation failed");
+      if (response.statusCode == 200) {
+        final file = File(outputPath);
+        await file.writeAsBytes(response.bodyBytes);
+        return true;
+      } else {
+        debugPrint("API Rasterize failed: ${response.statusCode} - ${response.body}");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Exception in API Rasterize: $e");
+      return false;
     }
   }
 
@@ -1494,17 +1523,10 @@ class _HomePageState extends State<HomePage> {
         "color": job.color == true ? "color" : "monochrome",
         "orientation": pageOrientation,
         "ip": ipPrinter,
-        "copies": job.copies ?? 1,
       };
-      if (isStaging) {
-        params["pageStart"] = job.pagesStart;
-        params["pageEnd"] = job.pageEnd;
-      }
       final String result = await platform.invokeMethod("printPDF", params);
       if (result == "success") {
         debugPrint('job id: ${job.id} | current status: ${job.status}');
-        await _updatePrintJobStatus(
-            job.id, 'Sent To Printer', currentStatus: job.status);
       } else {
         debugPrint('Failed print: $result');
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1521,10 +1543,6 @@ class _HomePageState extends State<HomePage> {
         if (printerName.isNotEmpty) {
           args.add('-P');
           args.add(printerName);
-        }
-
-        if (job.copies != null && job.copies! > 1) {
-          args.add('-#${job.copies}');
         }
 
         if (job.doubleSided) {
@@ -1551,7 +1569,10 @@ class _HomePageState extends State<HomePage> {
         }
 
         args.add('-o');
-        args.add('fit-to-page');
+        args.add('print-scaling=none');
+
+        args.add('-o');
+        args.add('media=iso_a4_210x297mm');
 
         args.add(file.path);
 
@@ -1561,21 +1582,11 @@ class _HomePageState extends State<HomePage> {
 
         if (result.exitCode == 0) {
           debugPrint('MacOS: File berhasil dikirim ke printer.');
-
-          await _updatePrintJobStatus(
-              job.id, 'Sent To Printer', currentStatus: job.status);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File berhasil dikirim ke printer (Mac).'),
-              backgroundColor: Colors.green,
-            ),
-          );
         } else {
           debugPrint('MacOS: Gagal mencetak file. Error: ${result.stderr}');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Gagal mencetak: ${result.stderr}'),
+              content: Text('Failed to print -> error: ${result.stderr}'),
               backgroundColor: Colors.red,
             ),
           );

@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:hlaprint/services/versioning_service.dart';
 import 'package:hlaprint/services/auto_update_manager.dart';
+import 'package:open_file_plus/open_file_plus.dart';
 import 'dart:io';
 
 class SettingsPage extends StatefulWidget {
@@ -180,15 +181,15 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _checkForUpdate() async {
-    if (!Platform.isWindows) return;
-
-    if (_rawVersion.isEmpty) return;
-
     setState(() => _isCheckingUpdate = true);
+
+    debugPrint("🔍 DEBUG: Starting checkVersion...");
 
     try {
       final result = await _versioningService.checkVersion(_rawVersion);
       setState(() => _isCheckingUpdate = false);
+
+      debugPrint("🔍 DEBUG: Update info received. HasUpdate: ${result.hasUpdate}, URL: ${result.downloadUrl}");
 
       if (result.hasUpdate) {
         _showUpdateDialog(
@@ -243,6 +244,8 @@ class _SettingsPageState extends State<SettingsPage> {
       _downloadProgress = 0.0;
     });
 
+    debugPrint("🔍 DEBUG: Starting download from ${url}");
+
     try {
       // 1. Download File
       File installer = await _versioningService.downloadInstaller(url, (received, total) {
@@ -253,22 +256,48 @@ class _SettingsPageState extends State<SettingsPage> {
         }
       });
 
+      debugPrint("🔍 DEBUG: Download finished. File path: ${installer.path}");
+      debugPrint("🔍 DEBUG: File exists check: ${await installer.exists()}");
       // 2. Jalankan Installer
       if (await installer.exists()) {
         debugPrint("Running installer: ${installer.path}");
 
-        // Jalankan installer secara terpisah (detached) agar saat aplikasi utama close, installer tetap jalan
-        await Process.start(
-          installer.path,
-          [],
-          mode: ProcessStartMode.detached,
-        );
+        if (Platform.isWindows) {
+          await Process.start(
+            installer.path,
+            [],
+            mode: ProcessStartMode.detached,
+          );
+          exit(0);
+        } else if (Platform.isAndroid) {
+          final result = await OpenFile.open(
+            installer.path,
+            type: "application/vnd.android.package-archive",
+          );
+          if (result.type != ResultType.done) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Install error: ${result.message}")),
+              );
+            }
+          }
+        } else if (Platform.isMacOS) {
+          debugPrint("🔍 DEBUG: Opening MacOS DMG...");
 
-        // 3. Matikan aplikasi Flutter ini agar installer bisa menimpa file
-        exit(0);
+          final result = await OpenFile.open(installer.path);
+
+          debugPrint("🔍 DEBUG: OpenFile Result: ${result.type}");
+
+          if (result.type != ResultType.done && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Open Failed: ${result.message}"))
+            );
+          }
+        }
       }
     } catch (e) {
       setState(() => _isDownloading = false);
+      debugPrint("🔍 DEBUG: Download failed: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Update failed: $e")),
@@ -443,7 +472,8 @@ class _SettingsPageState extends State<SettingsPage> {
       appBar: AppBar(
         title: Text(isAndroid ? 'Setting IP Printer' : 'Setting Default Printer'),
       ),
-      body: Padding(
+      body: SafeArea(
+        child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -498,7 +528,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-            if (Platform.isWindows) ...[
+            if (Platform.isWindows || Platform.isAndroid || Platform.isMacOS) ...[
               const Divider(),
               const SizedBox(height: 10),
               // Label "Application Update:" dihapus sesuai request
@@ -526,6 +556,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ],
         ),
+      ),
       ),
     );
   }
