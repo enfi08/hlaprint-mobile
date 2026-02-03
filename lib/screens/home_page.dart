@@ -13,6 +13,7 @@ import 'package:hlaprint/services/order_list_service.dart';
 import 'package:hlaprint/services/user_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sentry/sentry.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:hlaprint/constants.dart';
 import 'package:shimmer/shimmer.dart';
@@ -744,7 +745,7 @@ class _HomePageState extends State<HomePage> {
             await Future.delayed(const Duration(milliseconds: 500));
           } else if (Platform.isWindows && originalFile != null) {
             debugPrint("Batch ${i + 1} Failed. Fallback to Sumatra per page...");
-            await _printWithSumatra(originalFile.path, printerName, job);
+            await _printWithSumatra(originalFile.path, printerName, job, currentBatchStart, currentBatchEnd);
             await Future.delayed(const Duration(milliseconds: 200));
           }
           if (c == 0 && i == 0) {
@@ -760,11 +761,11 @@ class _HomePageState extends State<HomePage> {
           }
 
           if (i == numberOfBatches - 1 && c == copies - 1) {
-              debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
-              await _updatePrintJobStatus(
-                  jobId, 'Sent To Printer', currentStatus: 'Processing');
+            debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
+            await _updatePrintJobStatus(
+                jobId, 'Sent To Printer', currentStatus: 'Processing');
           }
-          if (copies > 1) await Future.delayed(const Duration(milliseconds: 150));
+          await Future.delayed(const Duration(milliseconds: 500));
         }
       }
 
@@ -789,11 +790,11 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob) async {
+  Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob, int customStartPage, int customEndPage) async {
     debugPrint("Attempting fallback print with SumatraPDF...");
 
-    final startPage = printJob.pagesStart;
-    final endPage = printJob.pageEnd;
+    final startPage = customStartPage;
+    final endPage = customEndPage;
     final isDuplex = printJob.doubleSided;
     final isColor = printJob.color ?? false;
     final orientation = printJob.pageOrientation;
@@ -818,6 +819,9 @@ class _HomePageState extends State<HomePage> {
       settingsParts.add("color");
     } else {
       settingsParts.add("monochrome");
+    }
+    if (orientation != null && orientation.toString().toLowerCase() != 'auto') {
+      settingsParts.add(orientation.toString());
     }
     settingsParts.add("fit");
 
@@ -846,7 +850,7 @@ class _HomePageState extends State<HomePage> {
         debugPrint("SumatraPDF printed successfully.");
         return true;
       } else {
-        debugPrint("SumatraPDF failed with exit code: $exitCode");
+        debugPrint("SumatraPDF failed with exit code: ${result.exitCode}");
         return false;
       }
     } catch (e) {
@@ -857,6 +861,7 @@ class _HomePageState extends State<HomePage> {
 
 
   Future<void> _submitPrintJob() async {
+    final String? userRole = _userRole;
     final prefs = await SharedPreferences.getInstance();
     final bwPrinterName = prefs.getString(printerNameKey) ?? "";
     final colorPrinterName = prefs.getString(printerColorNameKey);
@@ -876,7 +881,7 @@ class _HomePageState extends State<HomePage> {
     if ((Platform.isWindows || Platform.isMacOS) && bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(_userRole != 'darkstore'
+          content: Text(userRole != 'darkstore'
               ? 'Please to setting, and set the b/w printer'
               : 'Please to setting, and set the default print.'),
         ),
@@ -891,7 +896,7 @@ class _HomePageState extends State<HomePage> {
     try {
       PrintJobResponse response = await _printJobService.getPrintJobByCode(_pin, false);
 
-      if (_userRole != 'darkstore') {
+      if (userRole != 'darkstore') {
         final bool needsColorPrinter = response.printFiles.any((job) => job.color == true);
         if (needsColorPrinter && (colorPrinterName == null || colorPrinterName.isEmpty)) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -907,7 +912,7 @@ class _HomePageState extends State<HomePage> {
       if (response.printFiles.isNotEmpty) {
         if (response.isUseInvoice) {
           String invoicePrinter = bwPrinterName;
-          if (_userRole != null && _userRole != 'darkstore' && response.printFiles.first.color == true) {
+          if (userRole != null && userRole != 'darkstore' && response.printFiles.first.color == true) {
             invoicePrinter = colorPrinterName!;
           }
           await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter);
@@ -919,7 +924,7 @@ class _HomePageState extends State<HomePage> {
           File? downloadedFile;
 
           String selectedPrinter;
-          if (_userRole != 'darkstore' && job.color == true) {
+          if (userRole != 'darkstore' && job.color == true) {
             selectedPrinter = colorPrinterName!;
           } else {
             selectedPrinter = bwPrinterName;
@@ -978,6 +983,15 @@ class _HomePageState extends State<HomePage> {
         );
       }
     } catch (e) {
+      if (e is DioException && e.response?.statusCode == 500) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Session expired or Server Error. Logging out...')),
+          );
+        }
+        await _logout();
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.toString())),
       );
@@ -1146,6 +1160,7 @@ class _HomePageState extends State<HomePage> {
         workingDirectory: execDir,
       );
       if (result.exitCode == 0) {
+        debugPrint("Invoice url: $invoiceUrl");
         await _printInvoiceFile(printerName, outputPdf, color);
       }
     } catch (e, s) {
@@ -2226,29 +2241,29 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildRichTextItem(String label, String value) {
-   // if (value == '-') return const SizedBox.shrink();
+    // if (value == '-') return const SizedBox.shrink();
 
     return Padding(
-        padding: const EdgeInsets.only(right: 8.0),
-        child: RichText(
-          text: TextSpan(
-            style: const TextStyle(
-              fontSize: 14.0,
-              color: Colors.black,
-            ),
-            children: <TextSpan>[
-              // Label dalam bold
-              TextSpan(
-                text: '$label ',
-              ),
-              TextSpan(
-                text: '$value',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const TextSpan(text: ' |'),
-            ],
+      padding: const EdgeInsets.only(right: 8.0),
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(
+            fontSize: 14.0,
+            color: Colors.black,
           ),
+          children: <TextSpan>[
+            // Label dalam bold
+            TextSpan(
+              text: '$label ',
+            ),
+            TextSpan(
+              text: '$value',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const TextSpan(text: ' |'),
+          ],
         ),
+      ),
     );
   }
 
