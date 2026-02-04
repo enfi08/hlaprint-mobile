@@ -66,6 +66,8 @@ class _HomePageState extends State<HomePage> {
   double _gsProgress = 0.0;
   int _currentCopyProcessing = 1;
   int _totalCopiesProcessing = 1;
+  int _currentJobIndex = 1;
+  int _totalJobs = 1;
 
   @override
   void initState() {
@@ -632,7 +634,8 @@ class _HomePageState extends State<HomePage> {
       File? originalFile,
       String printerName,
       PrintJob job,
-      String? ipPrinter
+      String? ipPrinter,
+      {required int currentJobIndex, required int totalJobs}
       ) async {
     final jobId = job.id;
     final startPage = job.pagesStart;
@@ -640,6 +643,8 @@ class _HomePageState extends State<HomePage> {
     final copies = job.copies ?? 1;
     final Map<int, String> batchCache = {};
     const int batchSize = 10;
+    final prefs = await SharedPreferences.getInstance();
+    final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
     setState(() {
@@ -647,9 +652,12 @@ class _HomePageState extends State<HomePage> {
       _gsProgress = 0.0;
       _totalCopiesProcessing = copies;
       _currentCopyProcessing = 1;
+      _currentJobIndex = currentJobIndex;
+      _totalJobs = totalJobs;
     });
 
     try {
+      debugPrint("Processing Job with Mode: $altPrintMode");
       debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
 
       for (int c = 0; c < copies; c++) {
@@ -687,7 +695,7 @@ class _HomePageState extends State<HomePage> {
             }
 
             bool success = false;
-            if (Platform.isWindows) {
+            if (Platform.isWindows && altPrintMode == printDefault) {
               if (originalFile != null) {
                 success = await _runGhostscriptCommand(
                     originalFile.path,
@@ -700,7 +708,7 @@ class _HomePageState extends State<HomePage> {
                 debugPrint("Error: Original file is missing for Windows print job.");
                 success = false;
               }
-            } else {
+            } else if (Platform.isAndroid || Platform.isMacOS || (Platform.isWindows && altPrintMode == printTypeB)) {
               success = await _rasterizePdfApi(
                   job.filename,
                   newPath,
@@ -865,6 +873,7 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
     final bwPrinterName = prefs.getString(printerNameKey) ?? "";
     final colorPrinterName = prefs.getString(printerColorNameKey);
+    final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
 
     String ipPrinter = "";
     if (Platform.isAndroid) {
@@ -935,7 +944,7 @@ class _HomePageState extends State<HomePage> {
 
             await _updatePrintCount(job.id);
 
-            if (Platform.isWindows) {
+            if (Platform.isWindows && altPrintMode != printTypeB) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(
                     'Downloading file ${i + 1} of ${response.printFiles
@@ -958,7 +967,17 @@ class _HomePageState extends State<HomePage> {
               );
             }
 
-            await _processAndPrintStreamed(downloadedFile, selectedPrinter, job, ipPrinter);
+            await _processAndPrintStreamed(
+                downloadedFile,
+                selectedPrinter,
+                job,
+                ipPrinter,
+                currentJobIndex: i + 1,
+                totalJobs: response.printFiles.length);
+            if (i < response.printFiles.length - 1) {
+              debugPrint("Waiting for printer buffer...");
+              await Future.delayed(const Duration(seconds: 2));
+            }
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -1323,8 +1342,8 @@ class _HomePageState extends State<HomePage> {
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: {
           'pdf_url': fileUrl,
-          'start_page': startPage.toString(),
-          'end_page': endPage.toString(),
+          'page_start': startPage.toString(),
+          'page_end': endPage.toString(),
         },
       );
 
@@ -2447,9 +2466,9 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        _totalCopiesProcessing > 1
-                            ? "Processing Print Job... ${(_gsProgress * 100).toInt()}% (Copy $_currentCopyProcessing of $_totalCopiesProcessing)"
-                            : "Processing Print Job... ${(_gsProgress * 100).toInt()}%",
+                        "Processing Print Job... ${(_gsProgress * 100).toInt()}%"
+                            "${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}"
+                            "${_totalCopiesProcessing > 1 ? ' (Copy $_currentCopyProcessing of $_totalCopiesProcessing)' : ''}",
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 12, color: Colors.black),
                       ),

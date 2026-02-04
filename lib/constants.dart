@@ -13,3 +13,7 @@ const String skipCashierKey = isStaging ? "staging_is_skip_cashier" : "is_skip_c
 const String printerNameKey = isStaging ? "staging_printer_name" : "printer_name";
 const String printerColorNameKey = isStaging ? "staging_printer_color_name" : "printer_color_name";
 const String ipPrinterKey = isStaging ? "staging_ip_printer" : "ip_printer";
+const String alternativePrintModeKey = isStaging ? "staging_alternative_print_mode" : "alternative_print_mode";
+const String printDefault = "Print Default";
+const String printTypeA = "Print Type A";
+const String printTypeB = "Print Type B";
