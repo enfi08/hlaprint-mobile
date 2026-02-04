@@ -44,7 +44,6 @@ class _HomePageState extends State<HomePage> {
   final PrintCountService _printCountService = PrintCountService();
   final OrderListService _orderListService = OrderListService();
   final CashApproveService _cashApproveService = CashApproveService();
-  final VersioningService _versioningService = VersioningService();
   final UserService _userService = UserService();
   bool _hasCheckedLoginSave = false;
   bool _isLoading = false;
@@ -69,6 +68,8 @@ class _HomePageState extends State<HomePage> {
   double _gsProgress = 0.0;
   int _currentCopyProcessing = 1;
   int _totalCopiesProcessing = 1;
+  int _currentJobIndex = 1;
+  int _totalJobs = 1;
 
   @override
   void initState() {
@@ -579,9 +580,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _processAndPrintStreamed(
-      File originalFile,
+      File? originalFile,
       String printerName,
-      PrintJob job
+      PrintJob job,
+      {required int currentJobIndex, required int totalJobs}
       ) async {
     final jobId = job.id;
     final startPage = job.pagesStart;
@@ -589,6 +591,8 @@ class _HomePageState extends State<HomePage> {
     final copies = job.copies ?? 1;
     final Map<int, String> batchCache = {};
     const int batchSize = 10;
+    final prefs = await SharedPreferences.getInstance();
+    final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
     setState(() {
@@ -596,9 +600,12 @@ class _HomePageState extends State<HomePage> {
       _gsProgress = 0.0;
       _totalCopiesProcessing = copies;
       _currentCopyProcessing = 1;
+      _currentJobIndex = currentJobIndex;
+      _totalJobs = totalJobs;
     });
 
     try {
+      debugPrint("Processing Job with Mode: $altPrintMode");
       debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
 
       for (int c = 0; c < copies; c++) {
@@ -635,13 +642,28 @@ class _HomePageState extends State<HomePage> {
               } catch (_) {}
             }
 
-            bool success = await _runGhostscriptCommand(
-                originalFile.path,
-                newPath,
-                30,
-                startPage: currentBatchStart,
-                endPage: currentBatchEnd
-            );
+            bool success = false;
+            if (altPrintMode == printDefault) {
+              if (originalFile != null) {
+                success = await _runGhostscriptCommand(
+                    originalFile.path,
+                    newPath,
+                    30,
+                    startPage: currentBatchStart,
+                    endPage: currentBatchEnd
+                );
+              } else {
+                debugPrint("Error: Original file is missing for Windows print job.");
+                success = false;
+              }
+            } else if (altPrintMode == printTypeB) {
+              success = await _rasterizePdfApi(
+                  job.filename,
+                  newPath,
+                  startPage: currentBatchStart,
+                  endPage: currentBatchEnd
+              );
+            }
 
             if (success && File(newPath).existsSync()) {
               batchOutputPath = newPath;
@@ -659,7 +681,7 @@ class _HomePageState extends State<HomePage> {
             debugPrint("Batch ${i + 1} Success. Sending to printer...");
             await _printFileForWindows(printerName, File(batchOutputPath), job);
             await Future.delayed(const Duration(milliseconds: 500));
-          } else {
+          } else if (originalFile != null) {
             debugPrint("Batch ${i + 1} Failed. Fallback to Sumatra per page...");
             await _printWithSumatra(originalFile.path, printerName, job, currentBatchStart, currentBatchEnd);
             await Future.delayed(const Duration(milliseconds: 200));
@@ -781,6 +803,7 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
     final bwPrinterName = prefs.getString(printerNameKey) ?? "";
     final colorPrinterName = prefs.getString(printerColorNameKey);
+    final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
 
     if (bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -839,24 +862,37 @@ class _HomePageState extends State<HomePage> {
 
             await _updatePrintCount(job.id);
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Downloading file ${i + 1} of ${response.printFiles.length}...')),
-            );
+            if (altPrintMode != printTypeB) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text(
+                        'Downloading file ${i + 1} of ${response.printFiles.length}...')),
+              );
 
-            final String filenameToDownload = Uri
-                .parse(job.filename)
-                .pathSegments
-                .last;
-            downloadedFile = await _printJobService.downloadFile(
-              job.filename,
-              filenameToDownload,
-            );
+              final String filenameToDownload =
+                  Uri.parse(job.filename).pathSegments.last;
+              downloadedFile = await _printJobService.downloadFile(
+                job.filename,
+                filenameToDownload,
+              );
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
-            );
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text(
+                        'Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
+              );
+            }
 
-            await _processAndPrintStreamed(downloadedFile, selectedPrinter, job);
+            await _processAndPrintStreamed(
+                downloadedFile,
+                selectedPrinter,
+                job,
+                currentJobIndex: i + 1,
+                totalJobs: response.printFiles.length);
+            if (i < response.printFiles.length - 1) {
+              debugPrint("Waiting for printer buffer...");
+              await Future.delayed(const Duration(seconds: 2));
+            }
           } catch (e) {
             debugPrint("Error processing job ${i + 1}: $e");
             ScaffoldMessenger.of(context).showSnackBar(
@@ -1118,26 +1154,30 @@ class _HomePageState extends State<HomePage> {
     throw Exception("Unexpected Error fetching PDF");
   }
 
-  Future<File> rasterizePdf(String url, String filename, int pageStart, int pageEnd) async {
-    final response = await http.post(
-      Uri.parse("$baseUrl/api/rasterize-pdf"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({
-        "pdf_url": url,
-        "page_start": pageStart,
-        "page_end": pageEnd
-      }),
-    );
+  Future<bool> _rasterizePdfApi(String fileUrl, String outputPath, {required int startPage, required int endPage}) async {
+    try {
+      debugPrint("Rasterizing via API: $fileUrl, pages $startPage-$endPage");
+      final response = await http.post(
+        Uri.parse("$baseUrl/api/rasterize-pdf"),
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: {
+          'pdf_url': fileUrl,
+          'page_start': startPage.toString(),
+          'page_end': endPage.toString(),
+        },
+      );
 
-    if (response.statusCode == 200) {
-      final dir = await getTemporaryDirectory();
-      final savePath = '${dir.path}/$filename';
-      final file = File(savePath);
-      await file.writeAsBytes(response.bodyBytes);
-
-      return file;
-    } else {
-      throw Exception("PDF generation failed");
+      if (response.statusCode == 200) {
+        final file = File(outputPath);
+        await file.writeAsBytes(response.bodyBytes);
+        return true;
+      } else {
+        debugPrint("API Rasterize failed: ${response.statusCode} - ${response.body}");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Exception in API Rasterize: $e");
+      return false;
     }
   }
 
@@ -2079,9 +2119,9 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        _totalCopiesProcessing > 1
-                            ? "Processing Print Job... ${(_gsProgress * 100).toInt()}% (Copy $_currentCopyProcessing of $_totalCopiesProcessing)"
-                            : "Processing Print Job... ${(_gsProgress * 100).toInt()}%",
+                        "Processing Print Job... ${(_gsProgress * 100).toInt()}%"
+                            "${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}"
+                            "${_totalCopiesProcessing > 1 ? ' (Copy $_currentCopyProcessing of $_totalCopiesProcessing)' : ''}",
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 12, color: Colors.black),
                       ),

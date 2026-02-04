@@ -22,6 +22,8 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _userRole;
   bool? _autoUpdateEnabled;
   final TextEditingController _ipPrinterController = TextEditingController();
+  String _alternativePrintMethod = printDefault;
+  final List<String> _alternativePrintOptions = [printDefault, printTypeA, printTypeB];
   bool _isCheckingUpdate = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
@@ -36,6 +38,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSelectedColorPrinter();
     _loadVersionInfo();
     _loadAutoUpdateSettings();
+    _loadAlternativePrintSettings();
   }
 
   @override
@@ -61,6 +64,19 @@ class _SettingsPageState extends State<SettingsPage> {
       });
     }
   }
+
+Future<void> _loadAlternativePrintSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _alternativePrintMethod = prefs.getString(alternativePrintModeKey) ?? printDefault;
+        if (!_alternativePrintOptions.contains(_alternativePrintMethod)) {
+          _alternativePrintMethod = printDefault;
+        }
+      });
+    }
+  }
+
 
   Future<void> _checkForUpdate() async {
     if (!Platform.isWindows) return;
@@ -395,6 +411,33 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                     const SizedBox(height: 20),
                   ],
+                  ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text("Alternative ways to print"),
+                      subtitle: const Text("The different ways to print in case when the default print doesn't working"),
+                      trailing: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _alternativePrintMethod,
+                          items: _alternativePrintOptions.map((String value) {
+                            return DropdownMenuItem<String>(
+                              value: value,
+                              child: Text(value),
+                            );
+                          }).toList(),
+                          onChanged: (String? newValue) async {
+                            if (newValue != null) {
+                              setState(() {
+                                _alternativePrintMethod = newValue;
+                              });
+                              final prefs = await SharedPreferences.getInstance();
+                              await prefs.setString(alternativePrintModeKey, newValue);
+                              debugPrint("Alternative print method saved immediately: $newValue");
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
                   _buildDesktopSettings(),
 
                     ElevatedButton(
