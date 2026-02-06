@@ -946,8 +946,6 @@ class _HomePageState extends State<HomePage> {
           try {
             await _updatePrintJobStatus(job.id, 'Processing', currentStatus: job.status);
 
-            await _updatePrintCount(job.id);
-
             if (altPrintMode != printTypeB) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -975,6 +973,7 @@ class _HomePageState extends State<HomePage> {
                 job,
                 currentJobIndex: i + 1,
                 totalJobs: response.printFiles.length);
+            await _updatePrintCount(job.id);
             if (i < response.printFiles.length - 1) {
               debugPrint("Waiting for printer buffer...");
               await Future.delayed(const Duration(seconds: 2));
@@ -1379,8 +1378,6 @@ class _HomePageState extends State<HomePage> {
           'printerName': printerName,
           'color': job.color,
           'doubleSided': job.doubleSided,
-          'pagesStart': job.pagesStart,
-          'pageEnd': job.pageEnd,
           'copies': 1,
           'pageOrientation': job.pageOrientation,
         },
