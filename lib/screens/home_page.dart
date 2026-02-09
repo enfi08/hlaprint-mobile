@@ -798,6 +798,92 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<bool> _printSeparatorWithSumatra(String filePath, String printerName) async {
+    debugPrint("Attempting fallback print separator with SumatraPDF...");
+
+    List<String> settingsParts = [];
+
+    settingsParts.add("duplex");
+    settingsParts.add("monochrome");
+    settingsParts.add("fit");
+
+    String printSettings = settingsParts.join(",");
+    List<String> args = [
+      '-print-to', printerName,
+      '-silent',
+    ];
+
+    if (printSettings.isNotEmpty) {
+      args.add('-print-settings');
+      args.add(printSettings);
+    }
+    args.add(filePath);
+
+    try {
+      final String execDir = p.dirname(Platform.resolvedExecutable);
+      final exePath = p.join(execDir, 'SumatraPDF.exe');
+      final result = await Process.run(
+        exePath,
+        args,
+        workingDirectory: execDir,
+      );
+
+      if (result.exitCode == 0) {
+        debugPrint("SumatraPDF printed successfully.");
+        return true;
+      } else {
+        debugPrint("SumatraPDF failed with exit code: ${result.exitCode}");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Exception running SumatraPDF: $e");
+      return false;
+    }
+  }
+
+  Future<bool> _printInvoiceWithSumatra(String filePath, String printerName) async {
+    debugPrint("Attempting fallback print invoice with SumatraPDF...");
+
+    List<String> settingsParts = [];
+
+    settingsParts.add("simplex");
+    settingsParts.add("monochrome");
+    settingsParts.add("fit");
+
+    String printSettings = settingsParts.join(",");
+    List<String> args = [
+      '-print-to', printerName,
+      '-silent',
+    ];
+
+    if (printSettings.isNotEmpty) {
+      args.add('-print-settings');
+      args.add(printSettings);
+    }
+    args.add(filePath);
+
+    try {
+      final String execDir = p.dirname(Platform.resolvedExecutable);
+      final exePath = p.join(execDir, 'SumatraPDF.exe');
+      final result = await Process.run(
+        exePath,
+        args,
+        workingDirectory: execDir,
+      );
+
+      if (result.exitCode == 0) {
+        debugPrint("SumatraPDF printed successfully.");
+        return true;
+      } else {
+        debugPrint("SumatraPDF failed with exit code: ${result.exitCode}");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Exception running SumatraPDF: $e");
+      return false;
+    }
+  }
+
   Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob, int customStartPage, int customEndPage) async {
     debugPrint("Attempting fallback print with SumatraPDF...");
 
@@ -1171,6 +1257,8 @@ class _HomePageState extends State<HomePage> {
 
       final String execDir = p.dirname(Platform.resolvedExecutable);
       final exePath = p.join(execDir, 'wkhtmltopdf.exe');
+      final prefs = await SharedPreferences.getInstance();
+      final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
 
       final result = await Process.run(
         exePath,
@@ -1179,7 +1267,11 @@ class _HomePageState extends State<HomePage> {
       );
       if (result.exitCode == 0) {
         debugPrint("Invoice url: $invoiceUrl");
-        await _printInvoiceFile(printerName, outputPdf, color);
+        if (altPrintMode == printTypeA) {
+          await _printInvoiceWithSumatra(outputPdf.path, printerName);
+        } else {
+          await _printInvoiceFile(printerName, outputPdf, color);
+        }
       }
     } catch (e, s) {
       await Sentry.captureException(
@@ -1404,8 +1496,6 @@ class _HomePageState extends State<HomePage> {
           'color': false,
           'doubleSided': false,
           'copies': 1,
-          'pagesStart': 1,
-          'pageEnd': 2,
           'pageOrientation': 'auto',
         },
       );
@@ -1451,21 +1541,25 @@ class _HomePageState extends State<HomePage> {
         byteData.offsetInBytes,
         byteData.lengthInBytes,
       ));
+      final prefs = await SharedPreferences.getInstance();
+      final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
       if (Platform.isWindows) {
-        await platform.invokeMethod(
-          'printPDF',
-          {
-            'filePath': tempFile.path,
-            'printerName': printerName,
-            'printJobId': -2, // Using a dummy ID for a separator print
-            'color': true,
-            'doubleSided': true,
-            'copies': 1,
-            'pagesStart': 1, // A value of 0 often signifies printing all pages
-            'pageEnd': 2,
-            'pageOrientation': 'auto',
-          },
-        );
+        if (altPrintMode == printTypeA) {
+          await _printSeparatorWithSumatra(tempFile.path, printerName);
+        } else {
+          await platform.invokeMethod(
+            'printPDF',
+            {
+              'filePath': tempFile.path,
+              'printerName': printerName,
+              'printJobId': -2,
+              'color': false,
+              'doubleSided': true,
+              'copies': 1,
+              'pageOrientation': 'auto',
+            },
+          );
+        }
       } else if (Platform.isAndroid) {
         await platform.invokeMethod(
           'printInvoicePdf',
