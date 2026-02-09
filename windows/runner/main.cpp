@@ -350,7 +350,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     wprinter.assign(printerName.begin(), printerName.end());
 
     if (!OpenPrinterW(const_cast<LPWSTR>(wprinter.c_str()), &hPrinter, nullptr)) {
-        result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
+        result->Error("PRINTER_NOT_FOUND", "Printer not found or could not be opened.");
         OutputDebugStringA("Gagal membuka printer.\n");
         return false;
     }
@@ -359,7 +359,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     DWORD devModeSize = DocumentPropertiesW(nullptr, hPrinter, const_cast<LPWSTR>(wprinter.c_str()), nullptr, nullptr, 0);
     if (devModeSize <= 0) {
         ClosePrinter(hPrinter);
-        result->Error("GET_DEVMODE_SIZE_FAILED", "Gagal mendapatkan ukuran DEVMODE.");
+        result->Error("GET_DEVMODE_SIZE_FAILED", "Failed to get DEVMODE size.");
         return false;
     }
 
@@ -367,7 +367,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     PDEVMODE pDevMode = (PDEVMODE)GlobalAlloc(GPTR, devModeSize);
     if (!pDevMode) {
         ClosePrinter(hPrinter);
-        result->Error("ALLOC_DEVMODE_FAILED", "Gagal mengalokasikan memori untuk DEVMODE.");
+        result->Error("ALLOC_DEVMODE_FAILED", "Failed to allocate memory for DEVMODE.");
         return false;
     }
 
@@ -375,7 +375,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     if (DocumentPropertiesW(nullptr, hPrinter, const_cast<LPWSTR>(wprinter.c_str()), pDevMode, nullptr, DM_OUT_BUFFER) != IDOK) {
         GlobalFree(pDevMode);
         ClosePrinter(hPrinter);
-        result->Error("GET_DEVMODE_FAILED", "Gagal mendapatkan DEVMODE default.");
+        result->Error("GET_DEVMODE_FAILED", "Failed to get default DEVMODE.");
         return false;
     }
 
@@ -388,7 +388,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
             g_clear_error(&gerror);
         }
         else {
-            result->Error("FILE_URI_ERROR", "Gagal membentuk URI file.");
+            result->Error("FILE_URI_ERROR", "Failed to create file URI.");
         }
         GlobalFree(pDevMode);
         ClosePrinter(hPrinter);
@@ -403,7 +403,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
             g_clear_error(&gerror);
         }
         else {
-            result->Error("POPPLER_LOAD_ERROR", "Gagal memuat dokumen PDF.");
+            result->Error("POPPLER_LOAD_ERROR", "Failed to load PDF document.");
         }
         GlobalFree(pDevMode);
         ClosePrinter(hPrinter);
@@ -483,7 +483,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     if (!hdc) {
         g_object_unref(doc);
         ClosePrinter(hPrinter);
-        result->Error("PRINTER_NOT_FOUND", "Printer tidak ditemukan atau tidak bisa dibuka.");
+        result->Error("PRINTER_NOT_FOUND", "Printer not found or Device Context could not be created.");
         OutputDebugStringA("Gagal mendapatkan Device Context untuk printer.\n");
         return false;
     }
@@ -498,7 +498,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
         g_object_unref(doc);
         DeleteDC(hdc);
         ClosePrinter(hPrinter);
-        result->Error("START_DOC_FAILED", "Gagal memulai dokumen cetak.");
+        result->Error("START_DOC_FAILED", "Failed to start print document.");
         return false;
     }
 
@@ -534,7 +534,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
             g_object_unref(doc);
             DeleteDC(hdc);
             ClosePrinter(hPrinter);
-            result->Error("START_PAGE_FAILED", "Gagal memulai halaman cetak.");
+            result->Error("START_PAGE_FAILED", "Failed to start print page.");
             return false;
         }
 
@@ -546,7 +546,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
             g_object_unref(doc);
             DeleteDC(hdc);
             ClosePrinter(hPrinter);
-            result->Error("END_PAGE_FAILED", "Gagal mengakhiri halaman cetak.");
+            result->Error("END_PAGE_FAILED", "Failed to end print page.");
             return false;
         }
 
@@ -601,7 +601,6 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                             return;
                         }
                     }
-                    OutputDebugStringA("Argumen tidak valid.\n");
                     result->Error("INVALID_ARGUMENTS", "File path or printer name not provided.");
                 }
                 else if (call.method_name().compare("startMonitorPrinter") == 0) {
