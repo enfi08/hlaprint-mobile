@@ -630,7 +630,9 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
     DeleteDC(hdc);
     g_object_unref(doc);
 
-    std::thread(MonitorPrintJob, hPrinter, jobId, printJobId, totalPagesToPrint).detach();
+    if (printJobId > 0) {
+        std::thread(MonitorPrintJob, hPrinter, jobId, printJobId, totalPagesToPrint).detach();
+    }
 
     return true;
 }
@@ -701,6 +703,11 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
 
                         it = args->find(flutter::EncodableValue("printJobId"));
                         if (it != args->end()) printJobId = std::get<int>(it->second);
+                        if (printJobId <= 0) {
+                            std::cout << "Ignoring monitor request for system job ID: " << printJobId << std::endl;
+                            result->Success(flutter::EncodableValue("ignored"));
+                            return;
+                        }
                     }
 
                     // Jalankan monitoring di thread terpisah agar UI tidak freeze

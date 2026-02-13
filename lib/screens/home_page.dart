@@ -1105,7 +1105,7 @@ class _HomePageState extends State<HomePage> {
                   job.filename,
                   savePath,
                   onReceiveProgress: (received, total) {
-                    if (total != -1) {
+                    if (total > 0) {
                       setState(() {
                         _downloadProgress = received / total;
                       });
@@ -1567,12 +1567,6 @@ class _HomePageState extends State<HomePage> {
       );
 
       if (result == 'success') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice printed successfully.'),
-            backgroundColor: Colors.green,
-          ),
-        );
       } else if (result == 'Sent To Printer') {
       } else {
         throw Exception("Platform channel result: $result");
@@ -1583,14 +1577,6 @@ class _HomePageState extends State<HomePage> {
       bool isFallbackSuccess = await _printInvoiceWithSumatra(file.path, printerName);
       if (isFallbackSuccess) {
         debugPrint("Fallback to SumatraPDF (Invoice) successful.");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Invoice printed successfully.'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
       } else {
         await Sentry.captureException(
           e,
