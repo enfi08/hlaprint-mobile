@@ -22,7 +22,8 @@ void main() async {
 
   await SentryFlutter.init(
         (options) {
-      options.dsn = 'https://7022892b4c4313f2acf1b4bd43a0c7a7@o4508279105060864.ingest.de.sentry.io/4510219873812560';
+      options.dsn = isStaging ? ''
+              : 'https://7022892b4c4313f2acf1b4bd43a0c7a7@o4508279105060864.ingest.de.sentry.io/4510219873812560';
       options.sendDefaultPii = true;
       options.enableAppHangTracking = false;
     },

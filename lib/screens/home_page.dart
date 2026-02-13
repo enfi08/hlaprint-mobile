@@ -45,12 +45,15 @@ class _HomePageState extends State<HomePage> {
   final OrderListService _orderListService = OrderListService();
   final CashApproveService _cashApproveService = CashApproveService();
   final UserService _userService = UserService();
+  final Map<int, int> _jobBatchTracker = {};
+  final Set<int> _completedJobs = {};
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
   bool _hasCheckedLoginSave = false;
   bool _isLoading = false;
   String _pin = '';
   String _name = '';
   String _email = '';
-  String _printerStatus = '';
   bool _isSkipCashier = false;
   String? _userRole;
   List<PrintJob> _bookshopOrders = [];
@@ -84,10 +87,53 @@ class _HomePageState extends State<HomePage> {
     }
 
     platform.setMethodCallHandler((call) async {
-      if (call.method == "onPrinterStatus") {
-        setState(() {
-          _printerStatus = call.arguments; // "Online" / "Offline"
-        });
+      switch (call.method) {
+        case 'onPrintJobCompleted':
+          final args = call.arguments as Map;
+          final int printJobId = args['printJobId'];
+
+          debugPrint("DART LOG: Menerima sinyal Completed untuk Job #$printJobId dari C++");
+          bool readyToComplete = true;
+
+          if (_jobBatchTracker.containsKey(printJobId)) {
+            _jobBatchTracker[printJobId] = _jobBatchTracker[printJobId]! - 1;
+            final int remaining = _jobBatchTracker[printJobId]!;
+
+            debugPrint("TRACKER: Job #$printJobId sisa antrian: $remaining");
+
+            if (remaining > 0) {
+              readyToComplete = false;
+            } else {
+              _jobBatchTracker.remove(printJobId);
+            }
+          }
+
+          if (readyToComplete) {
+            _completedJobs.add(printJobId);
+            Future.delayed(const Duration(minutes: 2), () {
+              if (mounted) {
+                _completedJobs.remove(printJobId);
+                debugPrint("CLEANUP: Job #$printJobId dihapus dari memory pengunci.");
+              } else {
+                _completedJobs.remove(printJobId);
+              }
+            });
+            try {
+              debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
+              await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
+            } catch (e) {
+              debugPrint("DART ERROR: Gagal update status: $e");
+            }
+          }
+          break;
+
+        case 'onPrinterStatus':
+          String status = call.arguments as String;
+          debugPrint("PRINTER STATUS: $status");
+          break;
+
+        default:
+          debugPrint('Unknown method ${call.method}');
       }
     });
 
@@ -372,6 +418,8 @@ class _HomePageState extends State<HomePage> {
     _stopAutoRefresh();
     _scaffoldMessenger?.clearMaterialBanners();
     _scrollController.dispose();
+    _completedJobs.clear();
+    _jobBatchTracker.clear();
     for (var controller in _pinControllers) {
       controller.removeListener(_updatePin);
       controller.dispose();
@@ -595,7 +643,9 @@ class _HomePageState extends State<HomePage> {
     final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
+    int totalOperations = copies * numberOfBatches;
     setState(() {
+      _jobBatchTracker[jobId] = totalOperations;
       _isGsProcessing = true;
       _gsProgress = 0.0;
       _totalCopiesProcessing = copies;
@@ -607,6 +657,7 @@ class _HomePageState extends State<HomePage> {
     try {
       debugPrint("Processing Job with Mode: $altPrintMode");
       debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
+      debugPrint("TRACKER INIT: Job #$jobId akan diproses dalam $totalOperations operasi (Copies: $copies, Batches: $numberOfBatches)");
 
       for (int c = 0; c < copies; c++) {
         if (mounted) {
@@ -670,7 +721,7 @@ class _HomePageState extends State<HomePage> {
               batchCache[i] = newPath;
               debugPrint("Batch ${i + 1} Generated & Cached.");
             } else {
-              debugPrint("Batch ${i + 1} Failed/Timeout. Fallback...");
+              debugPrint("Batch ${i + 1} Print Type A. Fallback...");
               batchOutputPath = null;
             }
           } else {
@@ -680,30 +731,40 @@ class _HomePageState extends State<HomePage> {
           if (batchOutputPath != null) {
             debugPrint("Batch ${i + 1} Success. Sending to printer...");
             await _printFileForWindows(printerName, File(batchOutputPath), job);
-            await Future.delayed(const Duration(milliseconds: 500));
-          } else if (originalFile != null) {
-            debugPrint("Batch ${i + 1} Failed. Fallback to Sumatra per page...");
-            await _printWithSumatra(originalFile.path, printerName, job, currentBatchStart, currentBatchEnd);
-            await Future.delayed(const Duration(milliseconds: 200));
-          }
-          if (c == 0 && i == 0) {
-            int estimatedSeconds = totalPages * copies;
-            Future.delayed(Duration(seconds: estimatedSeconds), () async {
+          } else if (Platform.isWindows && originalFile != null) {
+            debugPrint("Batch ${i + 1}. Fallback to Sumatra per page...");
+            bool isSumatraSuccess = await _printWithSumatra(originalFile.path, printerName, job, currentBatchStart, currentBatchEnd);
+            if (isSumatraSuccess) {
+              debugPrint("Sumatra sent command. Requesting C++ to monitor spooler...");
+              await Future.delayed(const Duration(milliseconds: 500));
               try {
-                debugPrint("Timer $estimatedSeconds s finished. Updating job $jobId to 'Completed'...");
-                await _updatePrintJobStatus(jobId, 'Completed', currentStatus: 'Sent To Printer');
+                await platform.invokeMethod('monitorLastJob', {
+                  'printerName': printerName,
+                  'printJobId': jobId,
+                });
               } catch (e) {
-                debugPrint("Background Status Update Error: $e");
+                debugPrint("Gagal memanggil monitor C++: $e");
               }
-            });
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Failed to print with Type A'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
           }
 
-          if (i == numberOfBatches - 1 && c == copies - 1) {
+          if (i == numberOfBatches - 1 && c == copies - 1 && !_completedJobs.contains(jobId)) {
             debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
             await _updatePrintJobStatus(
                 jobId, 'Sent To Printer', currentStatus: 'Processing');
           }
-          await Future.delayed(const Duration(milliseconds: 500));
+          int dynamicDelay = 500;
+          if (numberOfBatches > 50) {
+            dynamicDelay = 200; // Percepat jika batch sangat banyak
+          }
+          await Future.delayed(Duration(milliseconds: dynamicDelay));
         }
       }
 
@@ -711,6 +772,7 @@ class _HomePageState extends State<HomePage> {
       debugPrint("All batches processed successfully.");
     } catch (e) {
       debugPrint("Pagination Print Error: $e");
+      _jobBatchTracker.remove(jobId);
       rethrow;
     } finally {
       debugPrint("Cleaning up temporary batch files...");
@@ -947,24 +1009,42 @@ class _HomePageState extends State<HomePage> {
             await _updatePrintJobStatus(job.id, 'Processing', currentStatus: job.status);
 
             if (altPrintMode != printTypeB) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text(
-                        'Downloading file ${i + 1} of ${response.printFiles.length}...')),
-              );
+              final String filenameToDownload = Uri.parse(job.filename).pathSegments.last;
+              final Directory tempDir = await getTemporaryDirectory();
+              final String savePath = p.join(tempDir.path, filenameToDownload);
 
-              final String filenameToDownload =
-                  Uri.parse(job.filename).pathSegments.last;
-              downloadedFile = await _printJobService.downloadFile(
-                job.filename,
-                filenameToDownload,
-              );
+              setState(() {
+                _isDownloading = true;
+                _downloadProgress = 0.0;
+              });
 
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text(
-                        'Download complete. Printing file ${i + 1} of ${response.printFiles.length}...')),
-              );
+              try {
+                await Dio().download(
+                  job.filename,
+                  savePath,
+                  onReceiveProgress: (received, total) {
+                    if (total != -1) {
+                      setState(() {
+                        _downloadProgress = received / total;
+                      });
+                    }
+                  },
+                );
+
+                downloadedFile = File(savePath);
+              } catch (e) {
+                debugPrint("Download Error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Failed to download file: $e')),
+                );
+                rethrow;
+              } finally {
+                if (mounted) {
+                  setState(() {
+                    _isDownloading = false;
+                  });
+                }
+              }
             }
 
             await _processAndPrintStreamed(
@@ -1025,18 +1105,6 @@ class _HomePageState extends State<HomePage> {
       });
     }
   }
-
-  // Future<String> _checkPrinterStatus(String printerName) async {
-  //   try {
-  //     final String status = await platform.invokeMethod('getPrinterStatus', {
-  //       'printerName': printerName,
-  //     });
-  //     return status;
-  //   } on PlatformException catch (e) {
-  //     print('Gagal mendapatkan status printer: ${e.message}');
-  //     return 'Error: ${e.message}';
-  //   }
-  // }
 
   Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse) async {
     if (jobResponse.userRole != "online") {
@@ -1297,25 +1365,34 @@ class _HomePageState extends State<HomePage> {
         );
       } else if (result == 'Sent To Printer') {
       } else {
+        throw Exception("Platform channel result: $result");
+      }
+    } on PlatformException catch (e, s) {
+      debugPrint("Platform channel invoice print failed: $e. Attempting fallback to SumatraPDF...");
+
+      bool isFallbackSuccess = await _printInvoiceWithSumatra(file.path, printerName);
+      if (isFallbackSuccess) {
+        debugPrint("Fallback to SumatraPDF (Invoice) successful.");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Invoice printed successfully.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        await Sentry.captureException(
+          e,
+          stackTrace: s,
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to print invoice: $result'),
+            content: Text('Print Error: ${e.message}'),
             backgroundColor: Colors.red,
           ),
         );
       }
-    } on PlatformException catch (e, s) {
-      debugPrint("Failed to print invoice: '${e.message}'.");
-      await Sentry.captureException(
-        e,
-        stackTrace: s,
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Print Error: ${e.message}'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 
@@ -1334,18 +1411,29 @@ class _HomePageState extends State<HomePage> {
       if (altPrintMode == printTypeA) {
         await _printSeparatorWithSumatra(tempFile.path, printerName);
       } else {
-        await platform.invokeMethod(
-           'printPDF',
-           {
-             'filePath': tempFile.path,
-             'printerName': printerName,
-             'printJobId': -2,
-             'color': false,
-             'doubleSided': true,
-             'copies': 1,
-             'pageOrientation': 'auto',
-           },
-         );
+        try {
+          await platform.invokeMethod(
+            'printPDF',
+            {
+              'filePath': tempFile.path,
+              'printerName': printerName,
+              'printJobId': -2,
+              'color': false,
+              'doubleSided': true,
+              'copies': 1,
+              'pageOrientation': 'auto',
+            },
+          );
+        } catch (e, s) {
+          debugPrint("Platform channel separator print failed: $e. Attempting fallback to SumatraPDF...");
+          try {
+            await _printSeparatorWithSumatra(tempFile.path, printerName);
+            debugPrint("Fallback separator successful.");
+          } catch (fallbackError) {
+            debugPrint("Fallback separator failed. Reporting to Sentry.");
+            await Sentry.captureException(e, stackTrace: s);
+          }
+        }
       }
     } catch (e, s) {
       await Sentry.captureException(
@@ -1387,25 +1475,36 @@ class _HomePageState extends State<HomePage> {
       } else if (result == 'Sent To Printer') {
         debugPrint('Pekerjaan cetak sudah dikirim ke printer.');
       } else {
+        throw Exception("Platform channel result: $result");
+      }
+    } on PlatformException catch (e, s) {
+      debugPrint("Platform channel print failed: $e. Attempting fallback to SumatraPDF...");
+
+      bool isFallbackSuccess = await _printWithSumatra(file.path, printerName, job, 0, 0);
+      if (isFallbackSuccess) {
+        debugPrint("Fallback to SumatraPDF successful.");
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        try {
+          await platform.invokeMethod('monitorLastJob', {
+            'printerName': printerName,
+            'printJobId': job.id,
+          });
+        } catch (e) {
+          debugPrint("Monitor failed: $e");
+        }
+      } else {
+        await Sentry.captureException(
+          e,
+          stackTrace: s,
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed print: $result'),
+            content: Text('Print Error: ${e.message}'),
             backgroundColor: Colors.red,
           ),
         );
       }
-    } on PlatformException catch (e, s) {
-      debugPrint("Failed to print: '${e.message}'.");
-      await Sentry.captureException(
-        e,
-        stackTrace: s,
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Print Error: ${e.message}'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 
@@ -2199,6 +2298,30 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
+
+              if (_isDownloading) ...[
+                const Divider(height: 1),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                  color: Colors.white,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        "Downloading File... ${(_downloadProgress * 100).toInt()}%",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 12, color: Colors.black),
+                      ),
+                      const SizedBox(height: 4),
+                      LinearProgressIndicator(
+                        value: _downloadProgress,
+                        backgroundColor: Colors.grey[300],
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
 
               if (_isGsProcessing) ...[
                 const Divider(height: 1),

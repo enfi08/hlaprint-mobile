@@ -9,6 +9,7 @@
 #include <thread>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <algorithm>
 #include <glib.h>
 #include <poppler/glib/poppler.h>
@@ -28,74 +29,146 @@ struct PrintEventData {
 };
 
 DWORD g_mainThreadId = 0;
+HWND g_mainWindowHandle = nullptr;
 
-void MonitorPrintJob(HANDLE hPrinter, DWORD jobId, int printJobId, int totalPages) {
-    OutputDebugStringA(("[MonitorJob] Polling job via EnumJobs (JOB_INFO_2), JobId=" + std::to_string(jobId) + "\n").c_str());
+void LogStatus(std::string msg) {
+    auto t = std::time(nullptr);
+    struct tm tm;
+    localtime_s(&tm, &t);
+    std::cout << "[PrintMonitor " << std::put_time(&tm, "%H:%M:%S") << "] " << msg << std::endl;
+    OutputDebugStringA(("[PrintMonitor] " + msg + "\n").c_str());
+}
 
-    bool alreadyReported = false;
+void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int totalPages) {
+    OutputDebugStringA(("START monitoring Windows Job ID: " + std::to_string(winJobId) + "\n").c_str());
 
-    while (true) {
-        DWORD needed = 0, returned = 0;
-        EnumJobs(hPrinter, 0, 255, 2, nullptr, 0, &needed, &returned);
-        if (needed == 0) {
-            Sleep(1000);
-            continue;
+    // Struktur untuk menyimpan info job
+    JOB_INFO_2* pJobInfo = NULL;
+    DWORD bytesNeeded = 0;
+    DWORD returned = 0;
+
+    // Status flag untuk menentukan hasil akhir
+    DWORD maxPagesPrintedSeen = 0;
+    bool wasDeletedFlagSeen = false;
+    bool wasErrorFlagSeen = false;
+    bool wasOffline = false;
+
+    int maxRetries = 600; // Timeout monitoring (misal 10 menit)
+    int currentRetry = 0;
+
+    while (currentRetry < maxRetries) {
+        // 1. Coba ambil info Job spesifik dari Windows
+        GetJob(hPrinter, winJobId, 2, NULL, 0, &bytesNeeded);
+
+        if (bytesNeeded == 0) {
+            break;
         }
 
+        pJobInfo = (JOB_INFO_2*)malloc(bytesNeeded);
 
-        JOB_INFO_2* pJobs = (JOB_INFO_2*)malloc(needed);
-        if (!EnumJobs(hPrinter, 0, 255, 2, (LPBYTE)pJobs, needed, &needed, &returned)) {
-            free(pJobs);
-            Sleep(1000);
-            continue;
+        if (!GetJob(hPrinter, winJobId, 2, (LPBYTE)pJobInfo, bytesNeeded, &returned)) {
+            // Gagal ambil job, kemungkinan besar Job sudah selesai dan dihapus dari spooler oleh Windows
+            free(pJobInfo);
+            LogStatus("GetJob failed (Job likely finished and removed from Spooler).");
+            break;
         }
 
-
-        bool found = false;
-        for (DWORD i = 0; i < returned; i++) {
-            if (pJobs[i].JobId == jobId) {
-                found = true;
-                std::string msg = "[MonitorJob] Job ditemukan di spooler, Status=" + std::to_string(pJobs[i].Status);
-                OutputDebugStringA((msg + "\n").c_str());
-
-
-                if (!alreadyReported && ((pJobs[i].Status & JOB_STATUS_COMPLETE) || pJobs[i].Status == 8208)) {
-                    std::string dbg = "[MonitorJob] COMPLETE flag terdeteksi (Status=" + std::to_string(pJobs[i].Status) + "), kirim event ke Dart segera.\n";
-                    OutputDebugStringA(dbg.c_str());
-
-
-                    PrintEventData* data = new PrintEventData();
-                    data->type = 1; // 1 = Tipe Job Selesai
-                    data->printJobId = printJobId;
-                    data->totalPages = totalPages;
-                    ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-                    alreadyReported = true;
-                    free(pJobs);
-                    ClosePrinter(hPrinter);
-                    return;
-                }
-                break;
-            }
-        }
-        free(pJobs);
-
-
-        if (!found) {
-            OutputDebugStringA("[MonitorJob] Job tidak ditemukan di spooler, anggap sudah selesai/cancel.\n");
-            if (!alreadyReported) {
-                PrintEventData* data = new PrintEventData();
-                data->type = 1; // 1 = Tipe Job Selesai
-                data->printJobId = printJobId;
-                data->totalPages = totalPages;
-
-                ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-            }
-            ClosePrinter(hPrinter);
-            return;
+        if (pJobInfo->PagesPrinted > maxPagesPrintedSeen) {
+            maxPagesPrintedSeen = pJobInfo->PagesPrinted;
         }
 
+        // 2. Analisa Status
+        // Windows status adalah bitmask, bisa kombinasi beberapa status
+        DWORD status = pJobInfo->Status;
 
-        Sleep(1000);
+        if ((status & JOB_STATUS_DELETING) || (status & JOB_STATUS_DELETED)) {
+            wasDeletedFlagSeen = true;
+        }
+        if (status & JOB_STATUS_ERROR) {
+            wasErrorFlagSeen = true;
+        }
+        if (status & JOB_STATUS_OFFLINE) {
+            wasOffline = true;
+        }
+
+        // Log detail untuk Anda debugging
+        std::string statusLog = "Status Code: " + std::to_string(status) +
+            " | Pages: " + std::to_string(pJobInfo->PagesPrinted) + "/" + std::to_string(pJobInfo->TotalPages);
+
+        if (status & JOB_STATUS_PRINTING) statusLog += " [Printing]";
+        if (status & JOB_STATUS_SPOOLING) statusLog += " [Spooling]";
+        if (status & JOB_STATUS_ERROR)    statusLog += " [Error]";
+        if (status & JOB_STATUS_OFFLINE)  statusLog += " [Offline]";
+        if (status & JOB_STATUS_PAPEROUT) statusLog += " [Paper Out]";
+        if (wasDeletedFlagSeen) statusLog += " [DELETING]";
+
+        LogStatus(statusLog);
+
+        // Kirim update progress ke Flutter (Opsional, agar user tidak bosan menunggu)
+        if (g_channel) {
+            flutter::EncodableMap args = {
+               {flutter::EncodableValue("status"), flutter::EncodableValue(statusLog)},
+               {flutter::EncodableValue("printJobId"), flutter::EncodableValue(appPrintJobId)}
+            };
+            // Kita pakai event type baru misal 3 utk log/progress
+            // g_channel->InvokeMethod("onPrintProgress", ...); 
+        }
+
+        // 3. Cek apakah ada Error fatal
+        if (status & JOB_STATUS_ERROR || status & JOB_STATUS_PAPEROUT) {
+            // Jika error, jangan break dulu, tunggu user perbaiki (isi kertas), atau break jika ingin fail fast.
+            // Di sini kita log saja dan lanjut monitoring.
+            LogStatus("WARNING: Printer Error/Paper Out detected. Waiting...");
+        }
+
+        // Bersihkan memori
+        free(pJobInfo);
+
+        // 4. Delay polling (Sleep 1 detik agar tidak makan CPU)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        currentRetry++;
+    }
+
+    LogStatus("Loop Finished. Analyzing Final Result...");
+    LogStatus("Max Pages Seen: " + std::to_string(maxPagesPrintedSeen) + " / " + std::to_string(totalPages));
+
+
+    bool isSuccess = false;
+
+    if (wasDeletedFlagSeen) {
+        isSuccess = false;
+        LogStatus("RESULT: Failed (Deleted flag detected).");
+    }
+    else if (wasErrorFlagSeen && maxPagesPrintedSeen == 0) {
+        // Error muncul DAN tidak ada halaman tercetak sama sekali sebelum hilang
+        // (Asumsi: Error fatal, job dibatalkan sistem)
+        isSuccess = false;
+        LogStatus("RESULT: Failed (Error flag detected & 0 pages).");
+    }
+    else {
+        isSuccess = true;
+        LogStatus("RESULT: Success (Job finished/handed off to printer).");
+    }
+
+    // --- KIRIM STATUS ---
+    if (isSuccess) {
+        PrintEventData* data = new PrintEventData();
+        data->type = 1; // Completed
+        data->printJobId = appPrintJobId;
+        data->totalPages = totalPages;
+
+        if (g_mainWindowHandle) { // Pastikan pakai g_mainWindowHandle
+            ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+        }
+        else {
+            // Fallback thread message
+            ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+        }
+        LogStatus("SENT: Message posted to Flutter.");
+    }
+    else {
+        // Jangan kirim Completed.
+        // Opsional: Kirim event failed jika mau update UI jadi "Cancelled"
     }
 }
 
@@ -616,6 +689,56 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                         }
                     }
                     result->Error("INVALID_ARGUMENTS", "Printer name not provided.");
+                }
+                else if (call.method_name() == "monitorLastJob") {
+                    const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+                    std::string printerName;
+                    int printJobId = 0;
+
+                    if (args) {
+                        auto it = args->find(flutter::EncodableValue("printerName"));
+                        if (it != args->end()) printerName = std::get<std::string>(it->second);
+
+                        it = args->find(flutter::EncodableValue("printJobId"));
+                        if (it != args->end()) printJobId = std::get<int>(it->second);
+                    }
+
+                    // Jalankan monitoring di thread terpisah agar UI tidak freeze
+                    std::thread([printerName, printJobId]() {
+                        HANDLE hPrinter = nullptr;
+                        if (OpenPrinterA(const_cast<LPSTR>(printerName.c_str()), &hPrinter, nullptr)) {
+
+                            // 1. Cari Job ID terbaru (Highest ID) di Printer tersebut
+                            DWORD bytesNeeded = 0, count = 0;
+                            EnumJobs(hPrinter, 0, 100, 2, nullptr, 0, &bytesNeeded, &count);
+
+                            std::vector<BYTE> buffer(bytesNeeded);
+                            if (EnumJobs(hPrinter, 0, 100, 2, buffer.data(), bytesNeeded, &bytesNeeded, &count)) {
+                                JOB_INFO_2* jobs = reinterpret_cast<JOB_INFO_2*>(buffer.data());
+                                DWORD maxJobId = 0;
+
+                                // Loop untuk mencari ID terbesar (Terbaru)
+                                for (DWORD i = 0; i < count; ++i) {
+                                    if (jobs[i].JobId > maxJobId) {
+                                        maxJobId = jobs[i].JobId;
+                                    }
+                                }
+
+                                if (maxJobId > 0) {
+                                    // 2. Gunakan fungsi Monitor yang sudah ada untuk memantau Job Sumatra ini
+                                    MonitorPrintJob(hPrinter, maxJobId, printJobId, 0);
+                                } else {
+                                    // Tidak ada job ditemukan (mungkin print sangat cepat selesai atau gagal masuk spooler)
+                                    // Kita bisa kirim completed langsung atau log error
+                                    PrintEventData* data = new PrintEventData{ 1, printJobId, 0, "No Job Found" };
+                                    PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+                                }
+                            }
+                            ClosePrinter(hPrinter);
+                        }
+                    }).detach();
+
+                    result->Success(flutter::EncodableValue("Monitoring Started"));
                 }
                 else {
                     OutputDebugStringA("Metode tidak diimplementasikan.\\n");
