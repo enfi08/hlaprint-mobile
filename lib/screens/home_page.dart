@@ -974,7 +974,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<bool> _printSeparatorWithSumatra(String filePath, String printerName) async {
+  Future<bool> _printSeparatorWithSumatra(String filePath, String printerName, String pageSize) async {
     debugPrint("Attempting fallback print separator with SumatraPDF...");
 
     List<String> settingsParts = [];
@@ -982,6 +982,13 @@ class _HomePageState extends State<HomePage> {
     settingsParts.add("duplex");
     settingsParts.add("monochrome");
     settingsParts.add("fit");
+
+    if (pageSize == 'A4') {
+      debugPrint("Target size is A4. Using printer default for Separator.");
+    } else {
+      String exactPaperName = await _resolvePaperNameForSumatra(printerName, pageSize);
+      settingsParts.add("paper=$exactPaperName");
+    }
 
     String printSettings = settingsParts.join(",");
     List<String> args = [
@@ -1017,7 +1024,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<bool> _printInvoiceWithSumatra(String filePath, String printerName) async {
+  Future<bool> _printInvoiceWithSumatra(String filePath, String printerName, String pageSize) async {
     debugPrint("Attempting fallback print invoice with SumatraPDF...");
 
     List<String> settingsParts = [];
@@ -1025,6 +1032,12 @@ class _HomePageState extends State<HomePage> {
     settingsParts.add("simplex");
     settingsParts.add("monochrome");
     settingsParts.add("fit");
+    if (pageSize == 'A4') {
+      debugPrint("Target size is A4. Using printer default for Invoice.");
+    } else {
+      String exactPaperName = await _resolvePaperNameForSumatra(printerName, pageSize);
+      settingsParts.add("paper=$exactPaperName");
+    }
 
     String printSettings = settingsParts.join(",");
     List<String> args = [
@@ -1263,12 +1276,16 @@ class _HomePageState extends State<HomePage> {
       }
 
       if (response.printFiles.isNotEmpty) {
+        String docPageSizeRaw = response.printFiles.first.pageSize ?? "A4";
+        String docPageSize = docPageSizeRaw.toUpperCase().trim();
+        if (docPageSize.isEmpty) docPageSize = "A4";
+
         if (response.isUseInvoice) {
           String invoicePrinter = _bwPrinterName;
           if (userRole != null && userRole != 'darkstore' && response.printFiles.first.color == true) {
             invoicePrinter = _colorPrinterName;
           }
-          await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter);
+          await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter, docPageSize);
         }
 
         // Menggunakan loop untuk memproses setiap pekerjaan cetak satu per satu
@@ -1353,7 +1370,7 @@ class _HomePageState extends State<HomePage> {
         }
 
         if (response.isUseSeparator) {
-          await _printSeparatorFromAsset(_bwPrinterName, ipPrinter);
+          await _printSeparatorFromAsset(_bwPrinterName, ipPrinter, docPageSize);
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1385,7 +1402,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse, String ipPrinter) async {
+  Future<void> _printInvoiceFromHtml(String printerName, PrintJobResponse jobResponse, String ipPrinter, String pageSize) async {
     if (jobResponse.userRole != "online") {
       String colorStatus = '';
       bool? color = jobResponse.printFiles.first.color;
@@ -1413,12 +1430,12 @@ class _HomePageState extends State<HomePage> {
       }
 
       if (Platform.isWindows) {
-        await _printInvoiceForWindows(printerName, invoiceUrl, color);
+        await _printInvoiceForWindows(printerName, invoiceUrl, color, pageSize);
       } else if (Platform.isMacOS) {
-        await _printInvoiceForMac(printerName, jobResponse.transactionId, jobResponse.companyId, colorStatus, jobResponse.userRole);
+        await _printInvoiceForMac(printerName, jobResponse.transactionId, jobResponse.companyId, colorStatus, jobResponse.userRole, pageSize);
       } else if (Platform.isAndroid) {
         debugPrint('invoice url: $invoiceUrl');
-        await _printInvoiceForAndroid(invoiceUrl, pageOrientation, ipPrinter);
+        await _printInvoiceForAndroid(invoiceUrl, pageOrientation, ipPrinter, pageSize);
       }
     }
   }
@@ -1544,7 +1561,7 @@ class _HomePageState extends State<HomePage> {
   }
 
 
-  Future<void> _printInvoiceForWindows(String printerName, String invoiceUrl, bool? color) async {
+  Future<void> _printInvoiceForWindows(String printerName, String invoiceUrl, bool? color, String pageSize) async {
     try {
       final htmlContent = await _printJobService.fetchInvoiceHtml(
           invoiceUrl);
@@ -1568,9 +1585,9 @@ class _HomePageState extends State<HomePage> {
       if (result.exitCode == 0) {
         debugPrint("Invoice url: $invoiceUrl");
         if (altPrintMode == printTypeA) {
-          await _printInvoiceWithSumatra(outputPdf.path, printerName);
+          await _printInvoiceWithSumatra(outputPdf.path, printerName, pageSize);
         } else {
-          await _printInvoiceFile(printerName, outputPdf, color);
+          await _printInvoiceFile(printerName, outputPdf, color, pageSize);
         }
       }
     } catch (e, s) {
@@ -1588,7 +1605,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printInvoiceForMac(String printerName, int transId, int companyId, String color, String role) async {
+  Future<void> _printInvoiceForMac(String printerName, int transId, int companyId, String color, String role, String pageSize) async {
     try {
       final path = role == 'darkstore' ? "macos-invoice-nana-pdf" : "macos-invoice-pdf";
       final bytes = await generateInvoicePdf(path, transId, companyId, color);
@@ -1597,6 +1614,14 @@ class _HomePageState extends State<HomePage> {
       final filePath = "${dir.path}/invoice_print.pdf";
       final file = File(filePath);
       await file.writeAsBytes(bytes);
+
+      String macMedia = switch (pageSize) {
+        'LETTER' => "na_letter_8.5x11in",
+        'LEGAL'  => "na_legal_8.5x14in",
+        'A3'     => "iso_a3_297x420mm",
+        'A5'     => "iso_a5_148x210mm",
+        _        => "iso_a4_210x297mm",
+      };
 
       List<String> args = [];
       args.add('-P');
@@ -1613,6 +1638,9 @@ class _HomePageState extends State<HomePage> {
 
       args.add('-o');
       args.add('fit-to-page');
+
+      args.add('-o');
+      args.add('media=$macMedia');
 
       args.add(file.path);
 
@@ -1655,7 +1683,14 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printSeparatorForMac(String printerName, File file) async {
+  Future<void> _printSeparatorForMac(String printerName, File file, String pageSize) async {
+    String macMedia = switch (pageSize) {
+      'LETTER' => "na_letter_8.5x11in",
+      'LEGAL'  => "na_legal_8.5x14in",
+      'A3'     => "iso_a3_297x420mm",
+      'A5'     => "iso_a5_148x210mm",
+      _        => "iso_a4_210x297mm",
+    };
     List<String> args = [];
     args.add('-P');
     args.add(printerName);
@@ -1670,6 +1705,9 @@ class _HomePageState extends State<HomePage> {
 
     args.add('-o');
     args.add('fit-to-page');
+
+    args.add('-o');
+    args.add('media=$macMedia');
 
     args.add(file.path);
 
@@ -1753,7 +1791,7 @@ class _HomePageState extends State<HomePage> {
   }
 
 
-  Future<void> _printInvoiceForAndroid(String invoiceUrl, int pageOrientation, String ipPrinter) async {
+  Future<void> _printInvoiceForAndroid(String invoiceUrl, int pageOrientation, String ipPrinter, String pageSize) async {
     try {
       final bytes = await fetchInvoicePdf(invoiceUrl);
 
@@ -1766,6 +1804,7 @@ class _HomePageState extends State<HomePage> {
         "orientation": pageOrientation,
         "ip": ipPrinter,
         "duplex": false,
+        "pageSize": pageSize,
       };
 
       String result = await platform.invokeMethod<String>(
@@ -1785,7 +1824,7 @@ class _HomePageState extends State<HomePage> {
   }
 
 
-  Future<void> _printInvoiceFile(String printerName, File file, bool? color) async {
+  Future<void> _printInvoiceFile(String printerName, File file, bool? color, String pageSize) async {
     try {
       final result = await platform.invokeMethod(
         'printPDF',
@@ -1796,6 +1835,7 @@ class _HomePageState extends State<HomePage> {
           'color': false,
           'doubleSided': false,
           'copies': 1,
+          'pageSize': pageSize,
           'pageOrientation': 'auto',
         },
       );
@@ -1808,7 +1848,7 @@ class _HomePageState extends State<HomePage> {
     } on PlatformException catch (e, s) {
       debugPrint("Platform channel invoice print failed: $e. Attempting fallback to SumatraPDF...");
 
-      bool isFallbackSuccess = await _printInvoiceWithSumatra(file.path, printerName);
+      bool isFallbackSuccess = await _printInvoiceWithSumatra(file.path, printerName, pageSize);
       if (isFallbackSuccess) {
         debugPrint("Fallback to SumatraPDF (Invoice) successful.");
       } else {
@@ -1826,7 +1866,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printSeparatorFromAsset(String printerName, String ipPrinter) async {
+  Future<void> _printSeparatorFromAsset(String printerName, String ipPrinter, String pageSize) async {
     File? tempFile;
     try {
       final byteData = await rootBundle.load('assets/pdf/separator.pdf');
@@ -1840,7 +1880,7 @@ class _HomePageState extends State<HomePage> {
       final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
       if (Platform.isWindows) {
         if (altPrintMode == printTypeA) {
-          await _printSeparatorWithSumatra(tempFile.path, printerName);
+          await _printSeparatorWithSumatra(tempFile.path, printerName, pageSize);
         } else {
           try {
             await platform.invokeMethod(
@@ -1852,13 +1892,14 @@ class _HomePageState extends State<HomePage> {
                 'color': false,
                 'doubleSided': true,
                 'copies': 1,
+                'pageSize': pageSize,
                 'pageOrientation': 'auto',
               },
             );
           } catch (e, s) {
             debugPrint("Platform channel separator print failed: $e. Attempting fallback to SumatraPDF...");
             try {
-              await _printSeparatorWithSumatra(tempFile.path, printerName);
+              await _printSeparatorWithSumatra(tempFile.path, printerName, pageSize);
               debugPrint("Fallback separator successful.");
             } catch (fallbackError) {
               debugPrint("Fallback separator failed. Reporting to Sentry.");
@@ -1874,10 +1915,11 @@ class _HomePageState extends State<HomePage> {
             "orientation": 3,
             "ip": ipPrinter,
             "duplex": true,
+            "pageSize": pageSize,
           },
         );
       } else if (Platform.isMacOS) {
-        await _printSeparatorForMac(printerName, tempFile);
+        await _printSeparatorForMac(printerName, tempFile, pageSize);
       }
     } catch (e, s) {
       await Sentry.captureException(
@@ -1967,6 +2009,7 @@ class _HomePageState extends State<HomePage> {
         "orientation": pageOrientation,
         'pageSize': pageSize,
         "ip": ipPrinter,
+        "copies": job.copies ?? 1,
       };
       final String result = await platform.invokeMethod("printPDF", params);
       if (result == "success") {

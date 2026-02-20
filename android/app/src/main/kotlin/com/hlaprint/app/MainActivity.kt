@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
                                 val colorMode = args["color"] as String
                                 val duplex = args["duplex"] as Boolean
                                 val pageSize = args["pageSize"] as? String ?: "A4"
+                                val copies = args["copies"] as? Int ?: 1
 
                                 val pdfFile = File(filePath)
                                 if (orientation == -1) {  // berarti "auto"
@@ -53,6 +54,7 @@ class MainActivity : FlutterActivity() {
                                     duplex = duplex,
                                     colorMode = colorMode,
                                     pageSize = pageSize,
+                                    copies = copies
                                 )
                                 result.success("success")
                             } catch (e: Exception) {
@@ -72,6 +74,8 @@ class MainActivity : FlutterActivity() {
                         val orientation = call.argument<Int>("orientation") ?: 3     // 3 = portrait (IPP enum)
                         val duplex = call.argument<Boolean>("duplex") ?: false
 
+                        val pageSize = call.argument<String>("pageSize") ?: "A4"
+
                         Thread {
                             try {
                                 val pdfFile = File(filePath)
@@ -80,6 +84,7 @@ class MainActivity : FlutterActivity() {
                                     printerIp = printerIp,
                                     orientation = orientation,
                                     duplex = duplex,
+                                    pageSize = pageSize
                                 )
                                 result.success("success")
                             } catch (e: Exception) {
@@ -120,6 +125,7 @@ class MainActivity : FlutterActivity() {
         duplex: Boolean,
         colorMode: String = "monochrome",
         pageSize: String = "A4",
+        copies: Int = 1,
     ) {
         try {
             val ippUrl = "ipp://$printerIp:631/ipp/print"
@@ -139,7 +145,7 @@ class MainActivity : FlutterActivity() {
                 pdfFile,
                 IppAttribute("job-name", IppTag.NameWithoutLanguage, IppString("IPP_Print_PDF")),
                 IppAttribute("document-format", IppTag.MimeMediaType, "application/pdf"),
-                IppAttribute("copies", IppTag.Integer, 1),
+                IppAttribute("copies", IppTag.Integer, copies),
                 IppAttribute("sides", IppTag.Keyword, if (duplex) "two-sided-long-edge" else "one-sided"),
                 IppAttribute("orientation-requested", IppTag.Enum, orientation),
                 IppAttribute("print-color-mode", IppTag.Keyword, colorMode),
