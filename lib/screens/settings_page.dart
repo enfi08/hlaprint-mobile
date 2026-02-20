@@ -27,6 +27,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isCheckingUpdate = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
+  String _statusText = "Downloading...";
   final VersioningService _versioningService = VersioningService();
 
   @override
@@ -141,6 +142,7 @@ Future<void> _loadAlternativePrintSettings() async {
     setState(() {
       _isDownloading = true;
       _downloadProgress = 0.0;
+      _statusText = "Downloading...";
     });
 
     try {
@@ -157,15 +159,13 @@ Future<void> _loadAlternativePrintSettings() async {
       if (await installer.exists()) {
         debugPrint("Running installer: ${installer.path}");
 
-        // Jalankan installer secara terpisah (detached)
-        await Process.start(
-          installer.path,
-          [],
-          mode: ProcessStartMode.detached,
-        );
+        setState(() {
+            _statusText = "Preparing installation...";
+          });
+        await Future.delayed(const Duration(seconds: 1));
 
-        // 3. Matikan aplikasi Flutter ini agar installer bisa menimpa file
-        exit(0);
+        debugPrint("Running Silent Installer: ${installer.path}");
+        await _versioningService.runSilentInstaller(installer);
       }
     } catch (e) {
       setState(() => _isDownloading = false);
@@ -462,7 +462,7 @@ Future<void> _loadAlternativePrintSettings() async {
               if (_isDownloading) ...[
                 LinearProgressIndicator(value: _downloadProgress),
                 const SizedBox(height: 5),
-                Text('Downloading... ${(_downloadProgress * 100).toStringAsFixed(0)}%'),
+                Text('$_statusText ${(_downloadProgress * 100).toStringAsFixed(0)}%'),
               ] else ...[
                 SizedBox(
                   width: double.infinity,
