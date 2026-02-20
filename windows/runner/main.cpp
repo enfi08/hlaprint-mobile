@@ -147,8 +147,13 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         LogStatus("RESULT: Failed (Error flag detected & 0 pages).");
     }
     else if (maxPagesPrintedSeen == 0 && totalPages > 0) {
-        isSuccess = false;
-        LogStatus("RESULT: Failed (Job disappeared with 0 pages printed - likely Cancelled by Admin/User).");
+        if (currentRetry <= 3 && !wasErrorFlagSeen && !wasOffline) {
+            isSuccess = true;
+            LogStatus("RESULT: Assumed Success (Job finished very fast before PagesPrinted could be polled).");
+        } else {
+            isSuccess = false;
+            LogStatus("RESULT: Failed (Job disappeared with 0 pages printed - likely Cancelled by Admin/User).");
+        }
     }
     else {
         isSuccess = true;
