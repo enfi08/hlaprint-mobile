@@ -43,7 +43,6 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
     OutputDebugStringA(("START monitoring Windows Job ID: " + std::to_string(winJobId) + "\n").c_str());
 
     // Struktur untuk menyimpan info job
-    JOB_INFO_2* pJobInfo = NULL;
     DWORD bytesNeeded = 0;
     DWORD returned = 0;
 
@@ -64,11 +63,11 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
             break;
         }
 
-        pJobInfo = (JOB_INFO_2*)malloc(bytesNeeded);
+        std::vector<BYTE> buffer(bytesNeeded);
+        JOB_INFO_2* pJobInfo = reinterpret_cast<JOB_INFO_2*>(buffer.data());
 
         if (!GetJob(hPrinter, winJobId, 2, (LPBYTE)pJobInfo, bytesNeeded, &returned)) {
             // Gagal ambil job, kemungkinan besar Job sudah selesai dan dihapus dari spooler oleh Windows
-            free(pJobInfo);
             LogStatus("GetJob failed (Job likely finished and removed from Spooler).");
             break;
         }
@@ -90,6 +89,7 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         if (status & JOB_STATUS_OFFLINE) {
             wasOffline = true;
         }
+        bool isBlocked = (status & JOB_STATUS_BLOCKED_DEVQ);
 
         // Log detail untuk Anda debugging
         std::string statusLog = "Status Code: " + std::to_string(status) +
@@ -101,8 +101,12 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         if (status & JOB_STATUS_OFFLINE)  statusLog += " [Offline]";
         if (status & JOB_STATUS_PAPEROUT) statusLog += " [Paper Out]";
         if (wasDeletedFlagSeen) statusLog += " [DELETING]";
+        if (isBlocked) statusLog += " [Blocked]";
 
         LogStatus(statusLog);
+        if ((status & JOB_STATUS_ERROR) || (status & JOB_STATUS_PAPEROUT) || (status & JOB_STATUS_OFFLINE)) {
+            LogStatus("WARNING: Printer Error/Offline detected. Waiting...");
+        }
 
         // Kirim update progress ke Flutter (Opsional, agar user tidak bosan menunggu)
         if (g_channel) {
@@ -120,9 +124,6 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
             // Di sini kita log saja dan lanjut monitoring.
             LogStatus("WARNING: Printer Error/Paper Out detected. Waiting...");
         }
-
-        // Bersihkan memori
-        free(pJobInfo);
 
         // 4. Delay polling (Sleep 1 detik agar tidak makan CPU)
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -145,109 +146,76 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         isSuccess = false;
         LogStatus("RESULT: Failed (Error flag detected & 0 pages).");
     }
+    else if (maxPagesPrintedSeen == 0 && totalPages > 0) {
+        isSuccess = false;
+        LogStatus("RESULT: Failed (Job disappeared with 0 pages printed - likely Cancelled by Admin/User).");
+    }
     else {
         isSuccess = true;
         LogStatus("RESULT: Success (Job finished/handed off to printer).");
     }
 
     // --- KIRIM STATUS ---
+    PrintEventData* data = new PrintEventData();
+    data->printJobId = appPrintJobId;
+    data->totalPages = totalPages;
     if (isSuccess) {
-        PrintEventData* data = new PrintEventData();
         data->type = 1; // Completed
-        data->printJobId = appPrintJobId;
-        data->totalPages = totalPages;
-
-        if (g_mainWindowHandle) { // Pastikan pakai g_mainWindowHandle
-            ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-        }
-        else {
-            // Fallback thread message
-            ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-        }
         LogStatus("SENT: Message posted to Flutter.");
     }
     else {
-        // Jangan kirim Completed.
-        // Opsional: Kirim event failed jika mau update UI jadi "Cancelled"
+        data->type = 3; // 3 = FAILED (Kita tentukan sendiri angka 3 ini sebagai kode Gagal)
+        data->statusMsg = "Print Failed or Cancelled";
+        LogStatus("SENT: FAILED to Flutter.");
     }
+    if (g_mainWindowHandle) {
+        ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+    }
+    else {
+        // Fallback thread message
+        ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+    }
+    ClosePrinter(hPrinter);
 }
 
-void MonitorPrinterStatus(const std::wstring& printerName) {
-    HANDLE hPrinter = nullptr;
-    if (!OpenPrinterW(const_cast<LPWSTR>(printerName.c_str()), &hPrinter, nullptr)) {
-        OutputDebugStringA("Tidak bisa membuka printer untuk monitoring.\n");
-        return;
-    }
+// Helper untuk konversi WString ke String (UTF-8)
+std::string WStringToString(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
 
-    // Kirim status awal
-    {
-        DWORD needed = 0;
-        GetPrinterW(hPrinter, 6, nullptr, 0, &needed);
-        if (needed > 0) {
-            PRINTER_INFO_6* pInfo6 = (PRINTER_INFO_6*)malloc(needed);
-            if (GetPrinterW(hPrinter, 6, (LPBYTE)pInfo6, needed, &needed)) {
-                std::string status = (pInfo6->dwStatus & PRINTER_STATUS_OFFLINE) ? "Offline" : "Online";
-                OutputDebugStringA("Kirim status awal via PostThreadMessage.\n");
+// Fungsi untuk mendapatkan daftar nama kertas dari driver
+std::vector<std::string> GetPrinterPaperNames(const std::string& printerName) {
+    std::vector<std::string> paperNames;
+    std::wstring wPrinterName(printerName.begin(), printerName.end());
+    LPWSTR pPrinterName = const_cast<LPWSTR>(wPrinterName.c_str());
 
-                PrintEventData* data = new PrintEventData();
-                data->type = 2; // 2 = Tipe Status Update
-                data->statusMsg = status;
+    // Ambil Port Name (DeviceCapabilities butuh Port, meski kadang NULL bisa jalan, lebih aman pakai Port)
+    // Tapi untuk simplifikasi, biasanya NULL di parameter port DeviceCapabilities sudah cukup untuk driver modern.
+    // Jika gagal, kita bisa perluas kode untuk OpenPrinter -> GetPrinter -> Ambil pPortName.
+    // Kita coba NULL dulu (biasanya works).
 
-                ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-            }
-            free(pInfo6);
-        }
-    }
+    // 1. Cek jumlah kertas yang didukung
+    DWORD count = DeviceCapabilitiesW(pPrinterName, NULL, DC_PAPERNAMES, NULL, NULL);
 
-    // Buat notification handle
-    HANDLE hChange = FindFirstPrinterChangeNotification(
-        hPrinter,
-        PRINTER_CHANGE_SET_PRINTER | PRINTER_CHANGE_FAILED_CONNECTION_PRINTER,
-        0,
-        nullptr
-    );
+    if (count > 0 && count != -1) {
+        // Buffer untuk nama kertas (Setiap nama max 64 karakter wide char)
+        wchar_t* pPaperNames = new wchar_t[count * 64];
 
-    if (hChange == INVALID_HANDLE_VALUE) {
-        OutputDebugStringA("Gagal membuat printer change notification.\n");
-        ClosePrinter(hPrinter);
-        return;
-    }
-
-    while (true) {
-        DWORD waitStatus = WaitForSingleObject(hChange, INFINITE);
-        if (waitStatus == WAIT_OBJECT_0) {
-            // Ada perubahan pada printer
-            DWORD needed = 0;
-            GetPrinterW(hPrinter, 6, nullptr, 0, &needed);
-            if (needed > 0) {
-                PRINTER_INFO_6* pInfo6 = (PRINTER_INFO_6*)malloc(needed);
-                if (GetPrinterW(hPrinter, 6, (LPBYTE)pInfo6, needed, &needed)) {
-                    std::string status = (pInfo6->dwStatus & PRINTER_STATUS_OFFLINE) ? "Offline" : "Online";
-                    OutputDebugStringA("Kirim status looping via PostThreadMessage.\n");
-
-                    PrintEventData* data = new PrintEventData();
-                    data->type = 2; // 2 = Tipe Status Update
-                    data->statusMsg = status;
-
-                    ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
-                }
-                free(pInfo6);
-            }
-
-            // Reset notification
-            if (!FindNextPrinterChangeNotification(hChange, nullptr, nullptr, nullptr)) {
-                OutputDebugStringA("Gagal reset printer change notification.\n");
-                break;
+        if (DeviceCapabilitiesW(pPrinterName, NULL, DC_PAPERNAMES, (LPWSTR)pPaperNames, NULL) != -1) {
+            for (DWORD i = 0; i < count; ++i) {
+                // Ambil pointer ke string ke-i
+                wchar_t* pName = pPaperNames + (i * 64);
+                paperNames.push_back(WStringToString(std::wstring(pName)));
             }
         }
-        else {
-            OutputDebugStringA("WaitForSingleObject gagal atau dibatalkan.\n");
-            break;
-        }
+        delete[] pPaperNames;
     }
 
-    FindClosePrinterChangeNotification(hChange);
-    ClosePrinter(hPrinter);
+    return paperNames;
 }
 
 bool HasContentInMargins(PopplerPage* page, double pdfW, double pdfH, double mL, double mT, double mR, double mB) {
@@ -417,7 +385,81 @@ void RenderPageBorderless(HDC hdc, PopplerPage* page) {
     cairo_surface_destroy(surface);
 }
 
-bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int copies, const std::string& pageOrientation, int printJobId, std::unique_ptr<flutter::MethodResult<>> result) {
+short GetWindowsPaperSize(std::string sizeName) {
+    std::transform(sizeName.begin(), sizeName.end(), sizeName.begin(),
+                   [](unsigned char c){ return (char)std::toupper(c); });
+    if (sizeName == "A4") return DMPAPER_A4;
+    if (sizeName == "LETTER") return DMPAPER_LETTER;
+    if (sizeName == "LEGAL") return DMPAPER_LEGAL;
+    if (sizeName == "A3") return DMPAPER_A3;
+    if (sizeName == "A5") return DMPAPER_A5;
+    if (sizeName == "F4") return DMPAPER_FOLIO;
+    return DMPAPER_A4; // Default
+}
+
+// --- [UPDATED FUNCTION] Cek Status Online/Offline Printer ---
+bool IsPrinterOnline(const std::string& printerName) {
+    std::wstring wPrinterName(printerName.begin(), printerName.end());
+    HANDLE hPrinter = nullptr;
+
+    PRINTER_DEFAULTSW pd;
+    pd.pDatatype = NULL;
+    pd.pDevMode = NULL;
+    pd.DesiredAccess = PRINTER_ACCESS_USE;
+
+    if (!OpenPrinterW(const_cast<LPWSTR>(wPrinterName.c_str()), &hPrinter, &pd)) {
+        //std::cout << "🔍 [Native Printer Cek] Gagal OpenPrinter. Anggap OFFLINE." << std::endl;
+        return false;
+    }
+
+    DWORD bytesNeeded = 0;
+    GetPrinterW(hPrinter, 2, nullptr, 0, &bytesNeeded);
+
+    if (bytesNeeded == 0) {
+        ClosePrinter(hPrinter);
+        return false;
+    }
+
+    std::vector<BYTE> buffer(bytesNeeded);
+    PRINTER_INFO_2W* pPrinterInfo = reinterpret_cast<PRINTER_INFO_2W*>(buffer.data());
+    DWORD bytesRead = 0;
+
+    if (!GetPrinterW(hPrinter, 2, buffer.data(), bytesNeeded, &bytesRead)) {
+        ClosePrinter(hPrinter);
+        return false;
+    }
+
+    ClosePrinter(hPrinter);
+
+    // Ambil Status dan Attributes
+    DWORD status = pPrinterInfo->Status;
+    DWORD attributes = pPrinterInfo->Attributes;
+
+//    std::cout << "🔍 [Native Printer Cek] Printer: " << printerName
+//              << " | Status: " << status
+//              << " | Attributes: " << attributes << std::endl;
+
+    // 1. Cek dari Status
+    if ((status & PRINTER_STATUS_OFFLINE) ||
+        (status & PRINTER_STATUS_ERROR) ||
+        (status & PRINTER_STATUS_NOT_AVAILABLE) ||
+        (status & PRINTER_STATUS_PAUSED)) {
+        //std::cout << "🔍 [Native Printer Cek] Hasil: Terdeteksi OFFLINE/ERROR dari Status" << std::endl;
+        return false;
+    }
+
+    // 2. Cek dari Attributes (Sangat penting untuk mendeteksi printer putus koneksi)
+    // PRINTER_ATTRIBUTE_WORK_OFFLINE bernilai 0x00000400 (1024)
+    if (attributes & PRINTER_ATTRIBUTE_WORK_OFFLINE) {
+//        std::cout << "🔍 [Native Printer Cek] Hasil: Terdeteksi OFFLINE dari Attributes (Work Offline)" << std::endl;
+        return false;
+    }
+
+//    std::cout << "🔍 [Native Printer Cek] Hasil: Printer ONLINE / READY" << std::endl;
+    return true;
+}
+
+bool PrintPDFFile(const std::string& filePath, const std::string& printerName, bool color, bool doubleSided, int copies, const std::string& pageOrientation, int printJobId, const std::string& pageSize, std::unique_ptr<flutter::MethodResult<>> result) {
     HANDLE hPrinter = nullptr;
     std::wstring wprinter;
     wprinter.assign(printerName.begin(), printerName.end());
@@ -507,7 +549,7 @@ bool PrintPDFFile(const std::string& filePath, const std::string& printerName, b
 
     // Mengatur metadata cetak
     pDevMode->dmFields |= DM_COPIES | DM_DUPLEX | DM_COLOR | DM_ORIENTATION | DM_PRINTQUALITY | DM_YRESOLUTION | DM_PAPERSIZE;
-    pDevMode->dmPaperSize = DMPAPER_A4;
+    pDevMode->dmPaperSize = GetWindowsPaperSize(pageSize);
 
     // Set kualitas cetak
     pDevMode->dmPrintQuality = DMRES_HIGH;
@@ -658,6 +700,13 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                         const auto& copies_val = args->find(flutter::EncodableValue("copies"));
                         const auto& orientation_val = args->find(flutter::EncodableValue("pageOrientation"));
                         const auto& print_job_id_val = args->find(flutter::EncodableValue("printJobId"));
+                        std::string pageSize = "A4";
+                        auto itSize = args->find(flutter::EncodableValue("pageSize"));
+                        if (itSize != args->end()) {
+                            if (std::holds_alternative<std::string>(itSize->second)) {
+                                pageSize = std::get<std::string>(itSize->second);
+                            }
+                        }
 
                         if (file_path_val != args->end() && printer_name_val != args->end() &&
                             color_val != args->end() && double_sided_val != args->end() &&
@@ -672,25 +721,33 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                             std::string pageOrientation = std::get<std::string>(orientation_val->second);
                             int printJobId = std::get<int>(print_job_id_val->second);
 
-                            PrintPDFFile(filePath, printerName, color, doubleSided, copies, pageOrientation, printJobId, std::move(result));
+                            PrintPDFFile(filePath, printerName, color, doubleSided, copies, pageOrientation, printJobId, pageSize, std::move(result));
                             return;
                         }
                     }
                     result->Error("INVALID_ARGUMENTS", "File path or printer name not provided.");
                 }
-                else if (call.method_name().compare("startMonitorPrinter") == 0) {
+                else if (call.method_name() == "getPrinterStatus") {
                     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+                    std::string printerName;
+
                     if (args) {
                         auto it = args->find(flutter::EncodableValue("printerName"));
                         if (it != args->end()) {
-                            std::string printerName = std::get<std::string>(it->second);
-                            std::wstring wprinter(printerName.begin(), printerName.end());
-                            std::thread(MonitorPrinterStatus, wprinter).detach();
-                            result->Success();
-                            return;
+                            printerName = std::get<std::string>(it->second);
                         }
                     }
-                    result->Error("INVALID_ARGUMENTS", "Printer name not provided.");
+
+                    if (printerName.empty()) {
+                        result->Error("INVALID_ARGUMENTS", "Printer name required");
+                        return;
+                    }
+
+                    // Panggil fungsi helper baru
+                    bool isOnline = IsPrinterOnline(printerName);
+
+                    // Kembalikan boolean ke Flutter (true = Online, false = Offline)
+                    result->Success(flutter::EncodableValue(isOnline));
                 }
                 else if (call.method_name() == "monitorLastJob") {
                     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
@@ -739,13 +796,43 @@ void RegisterMethodChannel(flutter::FlutterViewController* flutter_controller) {
                                     // Kita bisa kirim completed langsung atau log error
                                     PrintEventData* data = new PrintEventData{ 1, printJobId, 0, "No Job Found" };
                                     PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+                                    ClosePrinter(hPrinter);
                                 }
                             }
-                            ClosePrinter(hPrinter);
                         }
                     }).detach();
 
                     result->Success(flutter::EncodableValue("Monitoring Started"));
+                }
+                else if (call.method_name() == "getPrinterPaperSizes") {
+                    const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+                    std::string printerName;
+
+                    if (args) {
+                        // Cek 'ip' atau 'printerName'
+                        auto it = args->find(flutter::EncodableValue("ip"));
+                        if (it == args->end()) it = args->find(flutter::EncodableValue("printerName"));
+
+                        if (it != args->end()) {
+                            printerName = std::get<std::string>(it->second);
+                        }
+                    }
+
+                    if (printerName.empty()) {
+                        result->Error("INVALID_ARGUMENTS", "Printer name required");
+                        return;
+                    }
+
+                    // Panggil fungsi helper
+                    std::vector<std::string> papers = GetPrinterPaperNames(printerName);
+
+                    // Convert vector ke Flutter List
+                    flutter::EncodableList list;
+                    for (const auto& name : papers) {
+                        list.push_back(flutter::EncodableValue(name));
+                    }
+
+                    result->Success(list);
                 }
                 else {
                     OutputDebugStringA("Metode tidak diimplementasikan.\\n");
@@ -774,9 +861,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     FlutterWindow window(project);
     Win32Window::Point origin(10, 10);
     Win32Window::Size size(1280, 720);
-    if (!window.Create(L"hlaprint", origin, size)) {
+    if (!window.Create(L"Hlaprint", origin, size)) {
         return EXIT_FAILURE;
     }
+    g_mainWindowHandle = window.GetHandle();
     window.SetQuitOnClose(true);
 
     if (window.GetFlutterViewController()) {
@@ -798,6 +886,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                 }
                 else if (data->type == 2) { // Status Update
                     g_channel->InvokeMethod("onPrinterStatus", std::make_unique<flutter::EncodableValue>(data->statusMsg));
+                }
+                else if (data->type == 3) { // Job Failed / Cancelled
+                    flutter::EncodableMap args = {
+                            {flutter::EncodableValue("printJobId"), flutter::EncodableValue(data->printJobId)},
+                            {flutter::EncodableValue("error"), flutter::EncodableValue(data->statusMsg)}
+                    };
+                    g_channel->InvokeMethod("onPrintJobFailed", std::make_unique<flutter::EncodableValue>(args));
                 }
 
                 delete data;

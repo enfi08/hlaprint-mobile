@@ -186,24 +186,51 @@ class _UpdateManagerState extends State<UpdateManager> {
 
   // --- UI Logic untuk Manual Update (Existing Code) ---
   Future<void> _processUpdateUI(String latestVersion, String url, String msg, bool forceUpdate) async {
-    final prefs = await SharedPreferences.getInstance();
-
-    if (!forceUpdate) {
-      final String ignoredVersion = prefs.getString('update_ignored_version') ?? '';
-      int laterCount = prefs.getInt('update_later_count') ?? 0;
-
-      if (latestVersion != ignoredVersion) {
-        laterCount = 0;
-        await prefs.setInt('update_later_count', 0);
-        await prefs.setString('update_ignored_version', latestVersion);
-      }
-
-      if (laterCount >= 3) {
-        return;
-      }
+    if (!mounted) return;
+    final navContext = navigatorKey.currentContext;
+    if (navContext == null) {
+      debugPrint("Error: Navigator context is null, cannot show update dialog.");
+      return;
+    }
+    if (forceUpdate) {
+      showDialog(
+        context: navContext,
+        barrierDismissible: false, // User tidak bisa klik area luar untuk menutup
+        builder: (BuildContext context) {
+          return PopScope(
+            canPop: false, // User tidak bisa pakai tombol back/escape
+            child: AlertDialog(
+              title: const Text('Update Required'),
+              content: Text('$msg (v$latestVersion)\n\nThis update is mandatory to continue using the application.'),
+              actions: [
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _handleUpdateInstall(url);
+                  },
+                  child: const Text('Update Now'),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+      return;
     }
 
-    if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    final String ignoredVersion = prefs.getString('update_ignored_version') ?? '';
+    int laterCount = prefs.getInt('update_later_count') ?? 0;
+
+    if (latestVersion != ignoredVersion) {
+      laterCount = 0;
+      await prefs.setInt('update_later_count', 0);
+      await prefs.setString('update_ignored_version', latestVersion);
+    }
+
+    if (laterCount >= 3) {
+      return;
+    }
 
     ScaffoldMessenger.of(context).clearMaterialBanners();
     ScaffoldMessenger.of(context).showMaterialBanner(
@@ -213,11 +240,10 @@ class _UpdateManagerState extends State<UpdateManager> {
         backgroundColor: Colors.yellow[50],
         forceActionsBelow: false,
         actions: [
-          if (!forceUpdate)
-            TextButton(
-              onPressed: () => _handleUpdateLater(latestVersion),
-              child: const Text('Later'),
-            ),
+          TextButton(
+            onPressed: () => _handleUpdateLater(latestVersion),
+            child: const Text('Later'),
+          ),
           ElevatedButton(
             onPressed: () => _handleUpdateInstall(url),
             child: const Text('Install'),
@@ -245,6 +271,7 @@ class _UpdateManagerState extends State<UpdateManager> {
 
     ScaffoldMessenger.of(navContext).clearMaterialBanners();
     ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
+    ValueNotifier<String> statusNotifier = ValueNotifier("Downloading update package...");
 
     showDialog(
       context: navContext,
@@ -253,12 +280,17 @@ class _UpdateManagerState extends State<UpdateManager> {
         return PopScope(
           canPop: false,
           child: AlertDialog(
-            title: const Text('Downloading Update'),
+            title: const Text('Installing Update'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Downloading update package, please wait...'),
+                ValueListenableBuilder<String>(
+                  valueListenable: statusNotifier,
+                  builder: (context, status, child) {
+                    return Text(status);
+                  },
+                ),
                 const SizedBox(height: 20),
                 ValueListenableBuilder<double>(
                   valueListenable: progressNotifier,
@@ -292,8 +324,9 @@ class _UpdateManagerState extends State<UpdateManager> {
       });
 
       if (await installer.exists()) {
-        await Process.start(installer.path, [], mode: ProcessStartMode.detached);
-        exit(0);
+        statusNotifier.value = "Preparing installation...";
+        await Future.delayed(const Duration(seconds: 1));
+        await _versioningService.runSilentInstaller(installer);
       }
     } catch (e) {
       if (navigatorKey.currentState?.canPop() ?? false) {

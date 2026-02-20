@@ -2,15 +2,24 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:hlaprint/constants.dart';
 import 'package:hlaprint/models/app_version_model.dart';
+import 'package:hlaprint/services/auth_service.dart';
 import 'package:path_provider/path_provider.dart';
 
 class VersioningService {
+  final AuthService _authService = AuthService();
   final Dio _dio = Dio();
 
   Future<AppVersion> checkVersion(String currentVersion) async {
-    const url = '$baseUrl/api/check-version';
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception("Authentication token is missing.");
+    }
+
+    const url = '$baseUrl/api/new-check-version';
 
     final headers = {
+      "Authorization": "Bearer $token",
+      "Content-Type": "application/json",
       "Accept": "application/json",
     };
 

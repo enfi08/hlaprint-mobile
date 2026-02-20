@@ -34,6 +34,7 @@ class MainActivity : FlutterActivity() {
                                 var orientation = args["orientation"] as Int
                                 val colorMode = args["color"] as String
                                 val duplex = args["duplex"] as Boolean
+                                val pageSize = args["pageSize"] as? String ?: "A4"
 
                                 val pdfFile = File(filePath)
                                 if (orientation == -1) {  // berarti "auto"
@@ -51,6 +52,7 @@ class MainActivity : FlutterActivity() {
                                     orientation = orientation,
                                     duplex = duplex,
                                     colorMode = colorMode,
+                                    pageSize = pageSize,
                                 )
                                 result.success("success")
                             } catch (e: Exception) {
@@ -117,11 +119,21 @@ class MainActivity : FlutterActivity() {
         orientation: Int,
         duplex: Boolean,
         colorMode: String = "monochrome",
+        pageSize: String = "A4",
     ) {
         try {
             val ippUrl = "ipp://$printerIp:631/ipp/print"
             val printerUri = URI.create(ippUrl)
             val printer = IppPrinter(printerUri)
+            val mediaSizeKeyword = when (pageSize.uppercase()) {
+                "A4" -> "iso_a4_210x297mm"
+                "LETTER" -> "na_letter_8.5x11in"
+                "LEGAL" -> "na_legal_8.5x14in"
+                "A3" -> "iso_a3_297x420mm"
+                "A5" -> "iso_a5_148x210mm"
+                "F4" -> "om_f4_210x330mm"
+                else -> "iso_a4_210x297mm"
+            }
 
             val job = printer.printJob(
                 pdfFile,
@@ -132,7 +144,7 @@ class MainActivity : FlutterActivity() {
                 IppAttribute("orientation-requested", IppTag.Enum, orientation),
                 IppAttribute("print-color-mode", IppTag.Keyword, colorMode),
                 IppAttribute("print-quality", IppTag.Enum, 4),
-                IppAttribute("media", IppTag.Keyword, "iso_a4_210x297mm"),
+                IppAttribute("media", IppTag.Keyword, mediaSizeKeyword),
                 IppAttribute("print-scaling", IppTag.Keyword, "none")
             )
             println("✅ Job submitted: ${job.id}")

@@ -45,6 +45,12 @@ class _HomePageState extends State<HomePage> {
   final UserService _userService = UserService();
   final Map<int, int> _jobBatchTracker = {};
   final Set<int> _completedJobs = {};
+  final List<Timer> _cleanupTimers = [];
+  String _bwPrinterName = '';
+  String _colorPrinterName = '';
+  bool _isBwPrinterOnline = false;
+  bool _isColorPrinterOnline = false;
+  bool _isSmartCopiesActive = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   bool _hasCheckedLoginSave = false;
@@ -56,6 +62,7 @@ class _HomePageState extends State<HomePage> {
   String? _userRole;
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
+  Timer? _printerStatusTimer;
   int _secretTapCount = 0;
   DateTime? _lastTapTime;
 
@@ -78,6 +85,8 @@ class _HomePageState extends State<HomePage> {
     _loadCachedUserData();
     _loadUserRoleAndData();
     _startAutoRefresh();
+    _loadPrinterPreferences();
+    _startPrinterStatusTimer();
     _scrollController.addListener(_onScroll);
 
     for (var controller in _pinControllers) {
@@ -108,14 +117,10 @@ class _HomePageState extends State<HomePage> {
 
           if (readyToComplete) {
             _completedJobs.add(printJobId);
-            Future.delayed(const Duration(minutes: 2), () {
-              if (mounted) {
-                _completedJobs.remove(printJobId);
-                debugPrint("CLEANUP: Job #$printJobId dihapus dari memory pengunci.");
-              } else {
-                _completedJobs.remove(printJobId);
-              }
+            final timer = Timer(const Duration(minutes: 2), () {
+              _completedJobs.remove(printJobId);
             });
+            _cleanupTimers.add(timer);
             try {
               debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
               await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
@@ -125,6 +130,17 @@ class _HomePageState extends State<HomePage> {
           }
           break;
 
+        case 'onPrintJobFailed':
+          final args = call.arguments as Map;
+          final int printJobId = args['printJobId'];
+          final String reason = args['error'] ?? "Unknown";
+
+          debugPrint("DART: Job #$printJobId FAILED/CANCELLED. Reason: $reason");
+
+          if (_jobBatchTracker.containsKey(printJobId)) {
+            _jobBatchTracker.remove(printJobId);
+          }
+          break;
         case 'onPrinterStatus':
           String status = call.arguments as String;
           debugPrint("PRINTER STATUS: $status");
@@ -135,6 +151,88 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
+  }
+
+  void _startPrinterStatusTimer() {
+    _printerStatusTimer?.cancel();
+    _printerStatusTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (_isLoading || _isGsProcessing || _isDownloading) {
+        return;
+      }
+      _loadPrinterPreferences();
+    });
+  }
+
+  void _stopPrinterStatusTimer() {
+    _printerStatusTimer?.cancel();
+    _printerStatusTimer = null;
+
+    if (mounted) {
+      setState(() {
+        _isBwPrinterOnline = true;
+        _isColorPrinterOnline = true;
+      });
+    }
+  }
+
+  Future<void> _loadPrinterPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String newBwName = prefs.getString(printerNameKey) ?? '';
+    String newColorName = prefs.getString(printerColorNameKey) ?? '';
+
+    // Jika platform bukan windows, logic sederhana
+    if (!Platform.isWindows) {
+      if (mounted) {
+        setState(() {
+          _bwPrinterName = newBwName;
+          _colorPrinterName = newColorName;
+        });
+      }
+      return;
+    }
+
+    bool bwStatus = false;
+    bool colorStatus = false;
+
+    if (newBwName.isNotEmpty) {
+      try {
+        final bool result = await platform.invokeMethod(
+            'getPrinterStatus', {'printerName': newBwName});
+        bwStatus = result;
+        //debugPrint("🔍 [Cek Printer BW] Nama: $newBwName | Status Online: $result");
+      } catch (e) {
+        debugPrint("Error check BW printer: $e"); // Commented to reduce log spam on timer
+      }
+    }
+
+    if (newColorName.isNotEmpty &&
+        ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole)) {
+      try {
+        final bool result = await platform.invokeMethod(
+            'getPrinterStatus', {'printerName': newColorName});
+        colorStatus = result;
+        //debugPrint("🔍 [Cek Printer Color] Nama: $newColorName | Status Online: $result");
+      } catch (e) {
+        debugPrint("Error check Color printer: $e");
+      }
+    }
+
+    if (mounted) {
+      // Optimasi: Hanya setState jika ada perubahan value untuk mencegah flicker UI saat Timer berjalan
+      if (_bwPrinterName != newBwName ||
+          _colorPrinterName != newColorName ||
+          _isBwPrinterOnline != bwStatus ||
+          _isColorPrinterOnline != colorStatus) {
+
+        setState(() {
+          _bwPrinterName = newBwName;
+          _colorPrinterName = newColorName;
+          _isBwPrinterOnline = bwStatus;
+          _isColorPrinterOnline = colorStatus;
+        });
+      }
+    }
   }
 
   Future<void> _loadUserRoleAndData() async {
@@ -471,6 +569,11 @@ class _HomePageState extends State<HomePage> {
     _scrollController.dispose();
     _completedJobs.clear();
     _jobBatchTracker.clear();
+    _stopPrinterStatusTimer();
+    for (var t in _cleanupTimers) {
+      t.cancel();
+    }
+    _cleanupTimers.clear();
     for (var controller in _pinControllers) {
       controller.removeListener(_updatePin);
       controller.dispose();
@@ -693,11 +796,19 @@ class _HomePageState extends State<HomePage> {
     const int batchSize = 10;
     final prefs = await SharedPreferences.getInstance();
     final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
+    final int totalPagesToPrint =(endPage - startPage + 1);
+    final bool usePrinterCopies = totalPagesToPrint < batchSize;
+    final int outerLoopLimit = usePrinterCopies ? 1 : copies;
+    final int copiesForPrintCommand = usePrinterCopies ? copies : 1;
+    String pageSizeRaw = job.pageSize ?? "A4";
+    String pageSize = pageSizeRaw.toUpperCase().trim();
+    if (pageSize.isEmpty) pageSize = "A4";
     int totalPages = endPage - startPage + 1;
     int numberOfBatches = (totalPages / batchSize).ceil();
-    int totalOperations = copies * numberOfBatches;
+    int totalOperations = usePrinterCopies ? numberOfBatches : (copies * numberOfBatches);
     setState(() {
       _jobBatchTracker[jobId] = totalOperations;
+      _isSmartCopiesActive = usePrinterCopies;
       _isGsProcessing = true;
       _gsProgress = 0.0;
       _totalCopiesProcessing = copies;
@@ -710,8 +821,11 @@ class _HomePageState extends State<HomePage> {
       debugPrint("Processing Job with Mode: $altPrintMode");
       debugPrint("Starting Pagination Print: $totalPages pages in $numberOfBatches batches.");
       debugPrint("TRACKER INIT: Job #$jobId akan diproses dalam $totalOperations operasi (Copies: $copies, Batches: $numberOfBatches)");
+      debugPrint("Strategy: ${usePrinterCopies ? 'OPTIMIZED (Single Job, Native Copies)' : 'MANUAL LOOP (Multiple Jobs)'}");
+      debugPrint("Total Pages: $totalPagesToPrint | Batch Size: $batchSize");
+      debugPrint("Requested Copies: $copies | Loop Runs: $outerLoopLimit | Copies Per Command: $copiesForPrintCommand | pageSize: $pageSize");
 
-      for (int c = 0; c < copies; c++) {
+      for (int c = 0; c < outerLoopLimit; c++) {
         if (mounted) {
           setState(() {
             _currentCopyProcessing = c + 1;
@@ -792,18 +906,18 @@ class _HomePageState extends State<HomePage> {
             debugPrint("Batch ${i + 1} Found in Cache. Skipping Ghostscript.");
           }
 
+          PrintJob jobToPrint = job.copyWith(copies: copiesForPrintCommand);
           if (batchOutputPath != null) {
             debugPrint("Batch ${i + 1} Success. Sending to printer...");
             if (Platform.isWindows) {
               await _printFileForWindows(
-                  printerName, File(batchOutputPath), job);
+                  printerName, File(batchOutputPath), jobToPrint, pageSize);
             } else {
-              PrintJob batchJob = job.copyWith(copies: 1);
-              await _printFile(printerName, File(batchOutputPath), batchJob, ipPrinter ?? "");
+              await _printFile(printerName, File(batchOutputPath), jobToPrint, ipPrinter ?? "", pageSize);
             }
           } else if (Platform.isWindows && originalFile != null) {
             debugPrint("Batch ${i + 1}. Fallback to Sumatra per page...");
-            bool isSumatraSuccess = await _printWithSumatra(originalFile.path, printerName, job, currentBatchStart, currentBatchEnd);
+            bool isSumatraSuccess = await _printWithSumatra(originalFile.path, printerName, jobToPrint, pageSize, currentBatchStart, currentBatchEnd);
             if (isSumatraSuccess) {
               debugPrint("Sumatra sent command. Requesting C++ to monitor spooler...");
               await Future.delayed(const Duration(milliseconds: 500));
@@ -825,7 +939,7 @@ class _HomePageState extends State<HomePage> {
             }
           }
 
-          if (i == numberOfBatches - 1 && c == copies - 1 && !_completedJobs.contains(jobId)) {
+          if (i == 0 && c == 0 && !_completedJobs.contains(jobId)) {
             debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
             await _updatePrintJobStatus(
                 jobId, 'Sent To Printer', currentStatus: 'Processing');
@@ -945,8 +1059,72 @@ class _HomePageState extends State<HomePage> {
       return false;
     }
   }
+  // Helper untuk mencari nama kertas yang cocok di driver
+  Future<String> _resolvePaperNameForSumatra(String printerName, String targetSize) async {
+    try {
+      // 1. Minta daftar kertas dari Driver via Native C++
+      final List<Object?> result = await platform.invokeMethod('getPrinterPaperSizes', {
+        'ip': printerName, // Kirim nama printer
+      });
 
-  Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob, int customStartPage, int customEndPage) async {
+      // Casting ke List<String>
+      List<String> availablePapers = result.map((e) => e.toString()).toList();
+
+      debugPrint("Driver Papers for $printerName: $availablePapers");
+
+      String targetUpper = targetSize.toUpperCase().trim(); // misal "A5"
+
+      // 2. LOGIKA PENCOCOKAN (Fuzzy Matching)
+
+      // Prioritas A: Cari yang sama persis (Case Insensitive)
+      for (var paper in availablePapers) {
+        if (paper.toUpperCase() == targetUpper) return paper;
+      }
+
+      // Prioritas B: Cari yang MENGANDUNG kata tersebut (misal "A5" ada di "ISO A5" atau "A5 148x210")
+      // Kita cari yang stringnya paling pendek tapi mengandung kata kunci (untuk menghindari 'A5' match dengan 'A5 Extra Large')
+      String? bestMatch;
+      int shortestLength = 999;
+
+      for (var paper in availablePapers) {
+        String pUpper = paper.toUpperCase();
+
+        // Khusus F4, cari juga "FOLIO" atau "OFICIO"
+        if (targetUpper == "F4") {
+          if (pUpper.contains("FOLIO") || pUpper.contains("OFICIO") || pUpper.contains("F4")) {
+            return paper; // Ketemu F4/Folio
+          }
+        }
+
+        // Pencocokan standar (Contains)
+        // Tambahkan spasi agar "A5" tidak match dengan "A50" (jika ada)
+        // Cek: "A5", "A5 ", " A5"
+        bool match = pUpper == targetUpper ||
+            pUpper.contains("$targetUpper ") ||
+            pUpper.contains(" $targetUpper") ||
+            pUpper.contains(targetUpper); // Fallback longgar
+
+        if (match) {
+          if (paper.length < shortestLength) {
+            shortestLength = paper.length;
+            bestMatch = paper;
+          }
+        }
+      }
+
+      if (bestMatch != null) return bestMatch;
+
+      // 3. Jika tidak ketemu sama sekali, kembalikan default A4 (atau biarkan Sumatra pakai default printer)
+      debugPrint("Paper size $targetSize not found in driver. Defaulting to A4.");
+      return "A4";
+
+    } catch (e) {
+      debugPrint("Failed to resolve paper name: $e");
+      return "A4"; // Fallback jika error
+    }
+  }
+
+  Future<bool> _printWithSumatra(String filePath, String printerName, PrintJob printJob, String pageSize, int customStartPage, int customEndPage) async {
     debugPrint("Attempting fallback print with SumatraPDF...");
 
     final startPage = customStartPage;
@@ -954,8 +1132,10 @@ class _HomePageState extends State<HomePage> {
     final isDuplex = printJob.doubleSided;
     final isColor = printJob.color ?? false;
     final orientation = printJob.pageOrientation;
+    final copies = printJob.copies ?? 1;
 
-    debugPrint("SumatraPDF Print: Orientation=$orientation, Duplex=$isDuplex, Color=$isColor, Range=$startPage-$endPage");
+    if (pageSize == "F4") pageSize = "Folio";
+    debugPrint("SumatraPDF Print: Copies=$copies, Orientation=$orientation, Duplex=$isDuplex, Color=$isColor, Range=$startPage-$endPage, pageSize=$pageSize");
 
     List<String> settingsParts = [];
 
@@ -965,6 +1145,24 @@ class _HomePageState extends State<HomePage> {
       } else {
         settingsParts.add("$startPage-$endPage");
       }
+    }
+    settingsParts.add("paper=$pageSize");
+    if (copies > 1) {
+      settingsParts.add("${copies}x");
+    }
+    if (pageSize == "A4") {
+      // Jika A4, JANGAN kirim parameter paper=.
+      // Biarkan SumatraPDF mengikuti default setting dari Driver Printer (biasanya A4).
+      debugPrint("Target size is A4. Using printer default configuration (skipping paper argument).");
+    } else {
+      // Jika BUKAN A4 (misal A5, F4, Legal), baru kita cari nama spesifik di driver
+      debugPrint("Target size is $pageSize. Resolving specific paper name from driver...");
+
+      // Panggil fungsi helper resolve yang sudah dibuat sebelumnya
+      String exactPaperName = await _resolvePaperNameForSumatra(printerName, pageSize);
+
+      debugPrint("Resolved Paper Name for Sumatra: $exactPaperName");
+      settingsParts.add("paper=$exactPaperName");
     }
     if (isDuplex) {
       settingsParts.add("duplex");
@@ -1019,8 +1217,6 @@ class _HomePageState extends State<HomePage> {
   Future<void> _submitPrintJob() async {
     final String? userRole = _userRole;
     final prefs = await SharedPreferences.getInstance();
-    final bwPrinterName = prefs.getString(printerNameKey) ?? "";
-    final colorPrinterName = prefs.getString(printerColorNameKey);
     final String altPrintMode = prefs.getString(alternativePrintModeKey) ?? printDefault;
 
     String ipPrinter = "";
@@ -1035,7 +1231,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
     }
-    if ((Platform.isWindows || Platform.isMacOS) && bwPrinterName.isEmpty) {
+    if ((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(userRole != 'darkstore'
@@ -1055,7 +1251,7 @@ class _HomePageState extends State<HomePage> {
 
       if (userRole != 'darkstore') {
         final bool needsColorPrinter = response.printFiles.any((job) => job.color == true);
-        if (needsColorPrinter && (colorPrinterName == null || colorPrinterName.isEmpty)) {
+        if (needsColorPrinter && _colorPrinterName.isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Please to setting, and set the color printer'),
@@ -1068,9 +1264,9 @@ class _HomePageState extends State<HomePage> {
 
       if (response.printFiles.isNotEmpty) {
         if (response.isUseInvoice) {
-          String invoicePrinter = bwPrinterName;
+          String invoicePrinter = _bwPrinterName;
           if (userRole != null && userRole != 'darkstore' && response.printFiles.first.color == true) {
-            invoicePrinter = colorPrinterName!;
+            invoicePrinter = _colorPrinterName;
           }
           await _printInvoiceFromHtml(invoicePrinter, response, ipPrinter);
         }
@@ -1082,9 +1278,9 @@ class _HomePageState extends State<HomePage> {
 
           String selectedPrinter;
           if (userRole != 'darkstore' && job.color == true) {
-            selectedPrinter = colorPrinterName!;
+            selectedPrinter = _colorPrinterName;
           } else {
-            selectedPrinter = bwPrinterName;
+            selectedPrinter = _bwPrinterName;
           }
 
           try {
@@ -1157,7 +1353,7 @@ class _HomePageState extends State<HomePage> {
         }
 
         if (response.isUseSeparator) {
-          await _printSeparatorFromAsset(bwPrinterName, ipPrinter);
+          await _printSeparatorFromAsset(_bwPrinterName, ipPrinter);
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1274,6 +1470,7 @@ class _HomePageState extends State<HomePage> {
 
     if (result != null && result is String) {
       _showSuccessDialog(result);
+      _loadPrinterPreferences();
     }
   }
 
@@ -1283,26 +1480,63 @@ class _HomePageState extends State<HomePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _name,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _email,
-                style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+        // 1. BANNER WARNING (Dikeluarkan dari Row dan diletakkan di paling atas)
+        if ((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty)
+          MaterialBanner(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            content: Text(
+              _userRole != 'darkstore'
+                  ? 'Please to setting, and set the b/w printer'
+                  : 'Please to setting, and set the default print.',
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+            leading: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+            backgroundColor: Colors.orangeAccent[700],
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context)
+                      .push(MaterialPageRoute(builder: (_) => const SettingsPage()))
+                      .then((_) => _loadPrinterPreferences());
+                },
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                child: const Text('SETTINGS'),
               ),
             ],
           ),
+
+        // 2. BAGIAN NAMA, EMAIL, DAN LAMPU INDIKATOR
+        Padding(
+            padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center, // Sejajarkan secara vertikal
+              children: [
+                // Bungkus Column teks dengan Expanded agar tidak error jika teks panjang
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _name,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis, // Otomatis dipotong (...) jika kepanjangan
+                      ),
+                      Text(
+                        _email,
+                        style: const TextStyle(fontSize: 12),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16), // Jarak aman antara teks dan indikator
+
+                // 3. LAMPU INDIKATOR SAJA
+                _buildPrinterStatusInfo(),
+              ],
+            )
         ),
+
         if (showDivider)
           const Divider(height: 1, thickness: 1),
       ],
@@ -1666,7 +1900,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _printFileForWindows(String printerName, File file, PrintJob job) async {
+  Future<void> _printFileForWindows(String printerName, File file, PrintJob job, String pageSize) async {
     try {
       final String result = await platform.invokeMethod(
         'printPDF',
@@ -1676,7 +1910,8 @@ class _HomePageState extends State<HomePage> {
           'printerName': printerName,
           'color': job.color,
           'doubleSided': job.doubleSided,
-          'copies': 1,
+          'copies': job.copies,
+          'pageSize': pageSize,
           'pageOrientation': job.pageOrientation,
         },
       );
@@ -1690,7 +1925,7 @@ class _HomePageState extends State<HomePage> {
     } on PlatformException catch (e, s) {
       debugPrint("Platform channel print failed: $e. Attempting fallback to SumatraPDF...");
 
-      bool isFallbackSuccess = await _printWithSumatra(file.path, printerName, job, 0, 0);
+      bool isFallbackSuccess = await _printWithSumatra(file.path, printerName, job, pageSize, 0, 0);
       if (isFallbackSuccess) {
         debugPrint("Fallback to SumatraPDF successful.");
         await Future.delayed(const Duration(milliseconds: 500));
@@ -1717,7 +1952,7 @@ class _HomePageState extends State<HomePage> {
       }
     }
   }
-  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter) async {
+  Future<void> _printFile(String printerName, File file, PrintJob job, String ipPrinter, String pageSize) async {
     if (Platform.isAndroid) {
       int pageOrientation;
       if (job.pageOrientation == "auto") {
@@ -1730,6 +1965,7 @@ class _HomePageState extends State<HomePage> {
         "duplex": job.doubleSided,
         "color": job.color == true ? "color" : "monochrome",
         "orientation": pageOrientation,
+        'pageSize': pageSize,
         "ip": ipPrinter,
       };
       final String result = await platform.invokeMethod("printPDF", params);
@@ -1745,6 +1981,13 @@ class _HomePageState extends State<HomePage> {
         );
       }
     } else if (Platform.isMacOS) {
+      String macMedia = switch (pageSize) {
+        'LETTER' => "na_letter_8.5x11in",
+        'LEGAL'  => "na_legal_8.5x14in",
+        'A3'     => "iso_a3_297x420mm",
+        'A5'     => "iso_a5_148x210mm",
+        _        => "iso_a4_210x297mm", // Default (A4)
+      };
       try {
         List<String> args = [];
 
@@ -1780,7 +2023,7 @@ class _HomePageState extends State<HomePage> {
         args.add('print-scaling=none');
 
         args.add('-o');
-        args.add('media=iso_a4_210x297mm');
+        args.add('media=$macMedia');
 
         args.add(file.path);
 
@@ -2433,6 +2676,81 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildPrinterStatusInfo() {
+    if (!Platform.isWindows) return const SizedBox.shrink();
+
+    bool showColorPrinter = ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole) &&
+        _colorPrinterName.isNotEmpty;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end, // Rata kanan
+      children: [
+        if (_bwPrinterName.isNotEmpty)
+          _buildLedStatus(
+            _bwPrinterName,
+            _isBwPrinterOnline,
+            label: showColorPrinter ? 'B/W: ' : '',
+          ),
+
+        if (showColorPrinter) ...[
+          const SizedBox(height: 4),
+          _buildLedStatus(
+            _colorPrinterName,
+            _isColorPrinterOnline,
+            label: 'Color: ',
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildLedStatus(String name, bool isOnline, {String label = ''}) {
+    String displayName = name.length > 50 ? '${name.substring(0, 47)}...' : name;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        if (label.isNotEmpty)
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[800],
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        Text(
+          displayName,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey[700],
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(width: 6),
+        // LED Indicator
+        Container(
+          width: 8,
+          height: 8,
+          margin: const EdgeInsets.only(top: 1),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isOnline ? Colors.green : Colors.red,
+            boxShadow: [
+              BoxShadow(
+                color: (isOnline ? Colors.green : Colors.red).withOpacity(0.4),
+                blurRadius: 4,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildRichTextItem(String label, String value) {
     // if (value == '-') return const SizedBox.shrink();
 
@@ -2505,33 +2823,79 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (!_isLoading)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _name,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 1. BANNER WARNING (Jika printer belum diatur)
+                  if ((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty)
+                    MaterialBanner(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      content: Text(
+                        _userRole != 'darkstore'
+                            ? 'Please to setting, and set the b/w printer'
+                            : 'Please to setting, and set the default print.',
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
                       ),
+                      leading: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+                      backgroundColor: Colors.orangeAccent[700],
+                      actions: [
+                        TextButton(
+                          onPressed: () {
+                            Navigator.of(context)
+                                .push(MaterialPageRoute(builder: (_) => const SettingsPage()))
+                                .then((_) => _loadPrinterPreferences());
+                          },
+                          style: TextButton.styleFrom(foregroundColor: Colors.white),
+                          child: const Text('SETTINGS'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _email,
-                      style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+
+                  // 2. INFO USER & INDIKATOR PRINTER
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start, // Sejajar di atas
+                      children: [
+                        // Kolom info user dibungkus Expanded agar tidak bertabrakan dengan indikator printer
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _name,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                overflow: TextOverflow.ellipsis, // Potong teks kepanjangan (...)
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _email,
+                                style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Role: ${_userRole ?? '-'}',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16), // Jarak aman pemisah
+
+                        // Widget Indikator Printer
+                        _buildPrinterStatusInfo(),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Role: ${_userRole ?? '-'}',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             if (!_isLoading)
               const Divider(height: 1, thickness: 1),
@@ -2664,9 +3028,9 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        "Processing Print Job... ${(_gsProgress * 100).toInt()}%"
-                            "${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}"
-                            "${_totalCopiesProcessing > 1 ? ' (Copy $_currentCopyProcessing of $_totalCopiesProcessing)' : ''}",
+                        _totalCopiesProcessing > 1
+                            ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
+                            : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 12, color: Colors.black),
                       ),

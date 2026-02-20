@@ -29,6 +29,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isCheckingUpdate = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
+  String _statusText = "Downloading...";
   final VersioningService _versioningService = VersioningService();
 
   @override
@@ -256,6 +257,7 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _isDownloading = true;
       _downloadProgress = 0.0;
+      _statusText = "Downloading...";
     });
 
     debugPrint("🔍 DEBUG: Starting download from ${url}");
@@ -277,12 +279,13 @@ class _SettingsPageState extends State<SettingsPage> {
         debugPrint("Running installer: ${installer.path}");
 
         if (Platform.isWindows) {
-          await Process.start(
-            installer.path,
-            [],
-            mode: ProcessStartMode.detached,
-          );
-          exit(0);
+          setState(() {
+            _statusText = "Preparing installation...";
+          });
+          await Future.delayed(const Duration(seconds: 1));
+
+          debugPrint("Running Silent Installer: ${installer.path}");
+          await _versioningService.runSilentInstaller(installer);
         } else if (Platform.isAndroid) {
           final result = await OpenFile.open(
             installer.path,
@@ -578,7 +581,7 @@ class _SettingsPageState extends State<SettingsPage> {
               if (_isDownloading) ...[
                 LinearProgressIndicator(value: _downloadProgress),
                 const SizedBox(height: 5),
-                Text('Downloading... ${(_downloadProgress * 100).toStringAsFixed(0)}%'),
+                Text('$_statusText ${(_downloadProgress * 100).toStringAsFixed(0)}%'),
               ] else ...[
                 SizedBox(
                   width: double.infinity,
