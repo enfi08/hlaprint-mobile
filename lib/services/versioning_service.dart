@@ -11,17 +11,19 @@ class VersioningService {
 
   Future<AppVersion> checkVersion(String currentVersion) async {
     final token = await _authService.getToken();
-    if (token == null) {
-      throw Exception("Authentication token is missing.");
-    }
-
-    const url = '$baseUrl/api/new-check-version';
+    final bool isTokenEmpty = token == null || token.isEmpty;
+    final url = isTokenEmpty
+        ? '$baseUrl/api/check-version'
+        : '$baseUrl/api/new-check-version';
 
     final headers = {
-      "Authorization": "Bearer $token",
       "Content-Type": "application/json",
       "Accept": "application/json",
     };
+
+    if (!isTokenEmpty) {
+      headers["Authorization"] = "Bearer $token";
+    }
 
     String platformName;
     if (Platform.isAndroid) {
