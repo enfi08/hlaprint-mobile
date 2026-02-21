@@ -101,35 +101,7 @@ class _HomePageState extends State<HomePage> {
           final args = call.arguments as Map;
           final int printJobId = args['printJobId'];
 
-          debugPrint("DART LOG: Menerima sinyal Completed untuk Job #$printJobId dari C++");
-          bool readyToComplete = true;
-
-          if (_jobBatchTracker.containsKey(printJobId)) {
-            _jobBatchTracker[printJobId] = _jobBatchTracker[printJobId]! - 1;
-            final int remaining = _jobBatchTracker[printJobId]!;
-
-            debugPrint("TRACKER: Job #$printJobId sisa antrian: $remaining");
-
-            if (remaining > 0) {
-              readyToComplete = false;
-            } else {
-              _jobBatchTracker.remove(printJobId);
-            }
-          }
-
-          if (readyToComplete) {
-            _completedJobs.add(printJobId);
-            final timer = Timer(const Duration(minutes: 2), () {
-              _completedJobs.remove(printJobId);
-            });
-            _cleanupTimers.add(timer);
-            try {
-              debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
-              await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
-            } catch (e) {
-              debugPrint("DART ERROR: Gagal update status: $e");
-            }
-          }
+          _handleJobCompletion(printJobId);
           break;
 
         case 'onPrintJobFailed':
@@ -177,12 +149,126 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // Fungsi untuk mengecek koneksi langsung ke IP Printer (Khusus Android/Jaringan)
+  Future<bool> _checkNetworkPrinterOnline(String ip) async {
+    if (ip.isEmpty) return false;
+    try {
+      // Port 9100 adalah port standar RAW/JetDirect untuk hampir semua printer jaringan/thermal
+      final socket = await Socket.connect(ip, 9100, timeout: const Duration(seconds: 2));
+      socket.destroy(); // Langsung tutup jika berhasil connect
+      return true;
+    } catch (e) {
+      // Jika timeout atau rute tidak ditemukan, berarti offline
+      return false;
+    }
+  }
+
+  // Fungsi untuk mengecek status printer di MacOS menggunakan CUPS (lpstat)
+  Future<bool> _checkMacPrinterOnline(String printerName) async {
+    if (printerName.isEmpty) return false;
+    try {
+      final result = await Process.run('lpstat', ['-p', printerName]);
+      if (result.exitCode == 0) {
+        final output = result.stdout.toString().toLowerCase();
+        // Jika antrean CUPS melaporkan printer disabled, paused, atau rejecting, anggap offline (merah)
+        if (output.contains('disabled') || output.contains('paused') || output.contains('rejecting')) {
+          return false;
+        }
+        // Jika "idle" atau "processing", berarti printer online (hijau)
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint("MacOS printer status error: $e");
+      return false;
+    }
+  }
+
+  void _handleJobCompletion(int printJobId) async {
+    debugPrint("DART LOG: Memproses sinyal Completed untuk Job #$printJobId");
+    bool readyToComplete = true;
+
+    if (_jobBatchTracker.containsKey(printJobId)) {
+      _jobBatchTracker[printJobId] = _jobBatchTracker[printJobId]! - 1;
+      final int remaining = _jobBatchTracker[printJobId]!;
+
+      debugPrint("TRACKER: Job #$printJobId sisa antrian: $remaining");
+
+      if (remaining > 0) {
+        readyToComplete = false;
+      } else {
+        _jobBatchTracker.remove(printJobId);
+      }
+    }
+
+    if (readyToComplete) {
+      _completedJobs.add(printJobId);
+      final timer = Timer(const Duration(minutes: 2), () {
+        _completedJobs.remove(printJobId);
+      });
+      _cleanupTimers.add(timer);
+      try {
+        debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
+        await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
+      } catch (e) {
+        debugPrint("DART ERROR: Gagal update status: $e");
+      }
+    }
+  }
+
   Future<void> _loadPrinterPreferences() async {
     final prefs = await SharedPreferences.getInstance();
+
+    if (Platform.isAndroid) {
+      String ip = prefs.getString(ipPrinterKey) ?? '';
+      bool isOnline = false;
+
+      if (ip.isNotEmpty) {
+        isOnline = await _checkNetworkPrinterOnline(ip);
+      }
+
+      if (mounted) {
+        if (_bwPrinterName != ip || _isBwPrinterOnline != isOnline) {
+          setState(() {
+            _bwPrinterName = ip; // Gunakan IP sebagai nama di UI
+            _isBwPrinterOnline = isOnline;
+          });
+        }
+      }
+      return;
+    }
 
     String newBwName = prefs.getString(printerNameKey) ?? '';
     String newColorName = prefs.getString(printerColorNameKey) ?? '';
 
+    if (Platform.isMacOS) {
+      bool bwStatus = false;
+      bool colorStatus = false;
+
+      if (newBwName.isNotEmpty) {
+        bwStatus = await _checkMacPrinterOnline(newBwName);
+      }
+
+      if (newColorName.isNotEmpty &&
+          ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole)) {
+        colorStatus = await _checkMacPrinterOnline(newColorName);
+      }
+
+      if (mounted) {
+        if (_bwPrinterName != newBwName ||
+            _colorPrinterName != newColorName ||
+            _isBwPrinterOnline != bwStatus ||
+            _isColorPrinterOnline != colorStatus) {
+          setState(() {
+            _bwPrinterName = newBwName;
+            _colorPrinterName = newColorName;
+            _isBwPrinterOnline = bwStatus;
+            _isColorPrinterOnline = colorStatus;
+          });
+        }
+      }
+      return;
+    }
     // Jika platform bukan windows, logic sederhana
     if (!Platform.isWindows) {
       if (mounted) {
@@ -1404,13 +1490,15 @@ class _HomePageState extends State<HomePage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // 1. BANNER WARNING (Dikeluarkan dari Row dan diletakkan di paling atas)
-        if ((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty)
+        if (((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty) || (Platform.isAndroid && _bwPrinterName.isEmpty))
           MaterialBanner(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             content: Text(
-              _userRole != 'darkstore'
+              Platform.isAndroid
+                  ? 'Please go to settings, and set the IP Printer.'
+                  : (_userRole != 'darkstore'
                   ? 'Please to setting, and set the b/w printer'
-                  : 'Please to setting, and set the default print.',
+                  : 'Please to setting, and set the default print.'),
               style: const TextStyle(color: Colors.white, fontSize: 12),
             ),
             leading: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
@@ -2370,7 +2458,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildPrinterStatusInfo() {
-    if (!Platform.isWindows) return const SizedBox.shrink();
+    if (Platform.isIOS) return const SizedBox.shrink();
 
     bool showColorPrinter = ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole) &&
         _colorPrinterName.isNotEmpty;
@@ -2506,13 +2594,15 @@ class _HomePageState extends State<HomePage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   // 1. BANNER WARNING (Jika printer belum diatur)
-                  if ((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty)
+                  if (((Platform.isWindows || Platform.isMacOS) && _bwPrinterName.isEmpty) || (Platform.isAndroid && _bwPrinterName.isEmpty))
                     MaterialBanner(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       content: Text(
-                        _userRole != 'darkstore'
+                        Platform.isAndroid
+                            ? 'Please go to settings, and set the IP Printer.'
+                            : (_userRole != 'darkstore'
                             ? 'Please to setting, and set the b/w printer'
-                            : 'Please to setting, and set the default print.',
+                            : 'Please to setting, and set the default print.'),
                         style: const TextStyle(color: Colors.white, fontSize: 12),
                       ),
                       leading: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
@@ -2665,21 +2755,25 @@ class _HomePageState extends State<HomePage> {
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                   color: Colors.white,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        "Downloading File... ${(_downloadProgress * 100).toInt()}%",
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 12, color: Colors.black),
-                      ),
-                      const SizedBox(height: 4),
-                      LinearProgressIndicator(
-                        value: _downloadProgress,
-                        backgroundColor: Colors.grey[300],
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-                      ),
-                    ],
+                  child: SafeArea(
+                    top: false,
+                    bottom: true,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          "Downloading File... ${(_downloadProgress * 100).toInt()}%",
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 12, color: Colors.black),
+                        ),
+                        const SizedBox(height: 4),
+                        LinearProgressIndicator(
+                          value: _downloadProgress,
+                          backgroundColor: Colors.grey[300],
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -2689,23 +2783,27 @@ class _HomePageState extends State<HomePage> {
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                   color: Colors.white,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        _totalCopiesProcessing > 1
-                            ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
-                            : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 12, color: Colors.black),
-                      ),
-                      const SizedBox(height: 4),
-                      LinearProgressIndicator(
-                        value: _gsProgress,
-                        backgroundColor: Colors.grey[300],
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-                      ),
-                    ],
+                  child: SafeArea(
+                    top: false,
+                    bottom: true,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          _totalCopiesProcessing > 1
+                              ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
+                              : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 12, color: Colors.black),
+                        ),
+                        const SizedBox(height: 4),
+                        LinearProgressIndicator(
+                          value: _gsProgress,
+                          backgroundColor: Colors.grey[300],
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
