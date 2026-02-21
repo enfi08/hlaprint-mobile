@@ -151,7 +151,7 @@ class MainActivity : FlutterActivity() {
                 IppAttribute("print-color-mode", IppTag.Keyword, colorMode),
                 IppAttribute("print-quality", IppTag.Enum, 4),
                 IppAttribute("media", IppTag.Keyword, mediaSizeKeyword),
-                IppAttribute("print-scaling", IppTag.Keyword, "none")
+                IppAttribute("print-scaling", IppTag.Keyword, "auto-fit")
             )
             println("✅ Job submitted: ${job.id}")
         } catch (e: Exception) {
