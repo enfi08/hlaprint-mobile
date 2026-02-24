@@ -13,6 +13,7 @@ import 'package:Hlaprint/services/order_list_service.dart';
 import 'package:Hlaprint/services/user_service.dart';
 import 'package:Hlaprint/services/versioning_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:lottie/lottie.dart';
 import 'package:sentry/sentry.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
@@ -46,8 +47,6 @@ class _HomePageState extends State<HomePage> {
   final CashApproveService _cashApproveService = CashApproveService();
   final UserService _userService = UserService();
   final Map<int, int> _jobBatchTracker = {};
-  final Set<int> _completedJobs = {};
-  final List<Timer> _cleanupTimers = [];
   String _bwPrinterName = '';
   String _colorPrinterName = '';
   bool _isBwPrinterOnline = false;
@@ -56,6 +55,7 @@ class _HomePageState extends State<HomePage> {
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   bool _hasCheckedLoginSave = false;
+  bool _isAnimatingPrint = false;
   bool _isLoading = false;
   String _pin = '';
   String _name = '';
@@ -65,6 +65,7 @@ class _HomePageState extends State<HomePage> {
   List<PrintJob> _bookshopOrders = [];
   Timer? _autoRefreshTimer;
   Timer? _printerStatusTimer;
+  Timer? _stopAnimationTimer;
   int _secretTapCount = 0;
   DateTime? _lastTapTime;
 
@@ -102,6 +103,9 @@ class _HomePageState extends State<HomePage> {
           final int printJobId = args['printJobId'];
 
           _handleJobCompletion(printJobId);
+          _stopAnimationTimer = Timer(const Duration(seconds: 5), () {
+            if (mounted) setState(() => _isAnimatingPrint = false);
+          });
           break;
 
         case 'onPrintJobFailed':
@@ -114,12 +118,21 @@ class _HomePageState extends State<HomePage> {
           if (_jobBatchTracker.containsKey(printJobId)) {
             _jobBatchTracker.remove(printJobId);
           }
+          if (mounted) setState(() => _isAnimatingPrint = false);
           break;
         case 'onPrinterStatus':
           String status = call.arguments as String;
           debugPrint("PRINTER STATUS: $status");
           break;
+        case 'onPrintProgress':
+          final args = call.arguments as Map;
+          final String statusLog = args['status'] ?? "";
 
+          if (statusLog.contains("[Printing]")) {
+            if (mounted) setState(() => _isAnimatingPrint = true);
+            _stopAnimationTimer?.cancel();
+          }
+          break;
         default:
           debugPrint('Unknown method ${call.method}');
       }
@@ -202,17 +215,14 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (readyToComplete) {
-      _completedJobs.add(printJobId);
-      final timer = Timer(const Duration(minutes: 2), () {
-        _completedJobs.remove(printJobId);
+      Future.delayed(const Duration(seconds: 3), () async {
+        try {
+          debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
+          await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
+        } catch (e) {
+          debugPrint("DART ERROR: Gagal update status: $e");
+        }
       });
-      _cleanupTimers.add(timer);
-      try {
-        debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
-        await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
-      } catch (e) {
-        debugPrint("DART ERROR: Gagal update status: $e");
-      }
     }
   }
 
@@ -602,13 +612,8 @@ class _HomePageState extends State<HomePage> {
     _stopAutoRefresh();
     _scaffoldMessenger?.clearMaterialBanners();
     _scrollController.dispose();
-    _completedJobs.clear();
     _jobBatchTracker.clear();
     _stopPrinterStatusTimer();
-    for (var t in _cleanupTimers) {
-      t.cancel();
-    }
-    _cleanupTimers.clear();
     for (var controller in _pinControllers) {
       controller.removeListener(_updatePin);
       controller.dispose();
@@ -956,10 +961,11 @@ class _HomePageState extends State<HomePage> {
             }
           }
 
-          if (i == 0 && c == 0 && !_completedJobs.contains(jobId)) {
+          if (i == 0 && c == 0 && job.status != 'Sent To Printer') {
             debugPrint("Last batch sent. Updating status to 'Sent To Printer'...");
             await _updatePrintJobStatus(
                 jobId, 'Sent To Printer', currentStatus: 'Processing');
+            job = job.copyWith(status: 'Sent To Printer');
           }
           int dynamicDelay = 500;
           if (numberOfBatches > 50) {
@@ -2719,9 +2725,26 @@ class _HomePageState extends State<HomePage> {
                       child: Center(
                         child: Padding(
                           padding: const EdgeInsets.all(20.0),
-                          child: Image.asset(
-                            'assets/images/printer.jpeg',
-                            fit: BoxFit.contain,
+                          child:
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 500),
+                            child: _isDownloading
+                                ? Lottie.asset(
+                              'assets/animations/downloading.json',
+                              key: const ValueKey('anim_downloading'),
+                              fit: BoxFit.contain,
+                            )
+                                : _isAnimatingPrint
+                                ? Lottie.asset(
+                              'assets/animations/printing.json',
+                              key: const ValueKey('anim_printing'),
+                              fit: BoxFit.contain,
+                            )
+                                : Image.asset(
+                              'assets/images/printer.jpeg',
+                              key: const ValueKey('img_idle'),
+                              fit: BoxFit.contain,
+                            ),
                           ),
                         ),
                       ),
