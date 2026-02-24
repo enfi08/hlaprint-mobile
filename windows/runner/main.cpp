@@ -104,28 +104,25 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         if (isBlocked) statusLog += " [Blocked]";
 
         LogStatus(statusLog);
-        if ((status & JOB_STATUS_ERROR) || (status & JOB_STATUS_PAPEROUT) || (status & JOB_STATUS_OFFLINE)) {
-            LogStatus("WARNING: Printer Error/Offline detected. Waiting...");
+
+        // Kirim update progress ke Flutter secara AMAN (Thread-Safe)
+        PrintEventData* progressData = new PrintEventData();
+        progressData->type = 4; // Tipe 4 untuk Progress Status
+        progressData->printJobId = appPrintJobId;
+        progressData->statusMsg = statusLog;
+
+        BOOL isPosted = FALSE;
+        if (g_mainWindowHandle) {
+            isPosted = ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)progressData, 0);
+        } else {
+            isPosted = ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)progressData, 0);
         }
 
-        // Kirim update progress ke Flutter (Opsional, agar user tidak bosan menunggu)
-        if (g_channel) {
-            flutter::EncodableMap args = {
-               {flutter::EncodableValue("status"), flutter::EncodableValue(statusLog)},
-               {flutter::EncodableValue("printJobId"), flutter::EncodableValue(appPrintJobId)}
-            };
-            // Kita pakai event type baru misal 3 utk log/progress
-            // g_channel->InvokeMethod("onPrintProgress", ...); 
+        // --- MENCEGAH LEAK: Jika gagal dikirim, langsung hapus memori ---
+        if (!isPosted) {
+            delete progressData;
         }
 
-        // 3. Cek apakah ada Error fatal
-        if (status & JOB_STATUS_ERROR || status & JOB_STATUS_PAPEROUT) {
-            // Jika error, jangan break dulu, tunggu user perbaiki (isi kertas), atau break jika ingin fail fast.
-            // Di sini kita log saja dan lanjut monitoring.
-            LogStatus("WARNING: Printer Error/Paper Out detected. Waiting...");
-        }
-
-        // 4. Delay polling (Sleep 1 detik agar tidak makan CPU)
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         currentRetry++;
     }
@@ -136,24 +133,24 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
 
     bool isSuccess = false;
 
-    if (wasDeletedFlagSeen) {
-        isSuccess = false;
-        LogStatus("RESULT: Failed (Deleted flag detected).");
-    }
-    else if (wasErrorFlagSeen && maxPagesPrintedSeen == 0) {
+    if (wasErrorFlagSeen && maxPagesPrintedSeen == 0) {
         // Error muncul DAN tidak ada halaman tercetak sama sekali sebelum hilang
         // (Asumsi: Error fatal, job dibatalkan sistem)
         isSuccess = false;
         LogStatus("RESULT: Failed (Error flag detected & 0 pages).");
     }
     else if (maxPagesPrintedSeen == 0 && totalPages > 0) {
-        if (currentRetry <= 3 && !wasErrorFlagSeen && !wasOffline) {
+        if (!wasErrorFlagSeen && !wasOffline && !wasDeletedFlagSeen) {
             isSuccess = true;
             LogStatus("RESULT: Assumed Success (Job finished very fast before PagesPrinted could be polled).");
         } else {
             isSuccess = false;
             LogStatus("RESULT: Failed (Job disappeared with 0 pages printed - likely Cancelled by Admin/User).");
         }
+    }
+    else if (wasDeletedFlagSeen && maxPagesPrintedSeen == 0) {
+        isSuccess = false;
+        LogStatus("RESULT: Failed (Job was cancelled before printing started).");
     }
     else {
         isSuccess = true;
@@ -173,12 +170,16 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         data->statusMsg = "Print Failed or Cancelled";
         LogStatus("SENT: FAILED to Flutter.");
     }
+    BOOL isFinalPosted = FALSE;
     if (g_mainWindowHandle) {
-        ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+        isFinalPosted = ::PostMessage(g_mainWindowHandle, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
     }
     else {
         // Fallback thread message
-        ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+        isFinalPosted = ::PostThreadMessage(g_mainThreadId, WM_FLUTTER_PRINT_EVENT, (WPARAM)data, 0);
+    }
+    if (!isFinalPosted) {
+        delete data;
     }
     ClosePrinter(hPrinter);
 }
@@ -898,6 +899,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                             {flutter::EncodableValue("error"), flutter::EncodableValue(data->statusMsg)}
                     };
                     g_channel->InvokeMethod("onPrintJobFailed", std::make_unique<flutter::EncodableValue>(args));
+                }
+                else if (data->type == 4) { // Progress Update dari PrintMonitor
+                    flutter::EncodableMap args = {
+                            {flutter::EncodableValue("status"), flutter::EncodableValue(data->statusMsg)},
+                            {flutter::EncodableValue("printJobId"), flutter::EncodableValue(data->printJobId)}
+                    };
+                    g_channel->InvokeMethod("onPrintProgress", std::make_unique<flutter::EncodableValue>(args));
                 }
 
                 delete data;
