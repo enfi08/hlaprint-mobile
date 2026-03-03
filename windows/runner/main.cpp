@@ -149,8 +149,14 @@ void MonitorPrintJob(HANDLE hPrinter, DWORD winJobId, int appPrintJobId, int tot
         }
     }
     else if (wasDeletedFlagSeen && maxPagesPrintedSeen == 0) {
-        isSuccess = false;
-        LogStatus("RESULT: Failed (Job was cancelled before printing started).");
+        // asumsikan berhasil karena banyak driver printer yang tidak melaporkan PagesPrinted.
+        if (!wasErrorFlagSeen && !wasOffline) {
+            isSuccess = true;
+            LogStatus("RESULT: Assumed Success (Job deleted without errors, likely driver doesn't report PagesPrinted).");
+        } else {
+            isSuccess = false;
+            LogStatus("RESULT: Failed (Job was cancelled before printing started).");
+        }
     }
     else {
         isSuccess = true;
