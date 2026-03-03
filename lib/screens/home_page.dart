@@ -217,6 +217,14 @@ class _HomePageState extends State<HomePage> {
         try {
           debugPrint("✅ FINAL: Semua batch selesai. Update status Completed ke Server...");
           await _printJobService.updatePrintJobStatus(printJobId, 'Completed');
+          if (mounted) {
+            setState(() {
+              final indexToUpdate = _bookshopOrders.indexWhere((job) => job.id == printJobId);
+              if (indexToUpdate != -1) {
+                _bookshopOrders[indexToUpdate] = _bookshopOrders[indexToUpdate].copyWith(status: 'Completed');
+              }
+            });
+          }
         } catch (e) {
           debugPrint("DART ERROR: Gagal update status: $e");
         }
@@ -2250,40 +2258,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildBookshopBody() {
-    if (_isLoading) {
-      return ListView.builder(
-        padding: const EdgeInsets.all(16.0),
-        itemCount: _limit,
-        itemBuilder: (context, index) {
-          return Card(
-            margin: const EdgeInsets.symmetric(vertical: 8.0),
-            child: Shimmer.fromColors(
-              baseColor: Colors.grey[300]!,
-              highlightColor: Colors.grey[100]!,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(width: double.infinity, height: 16.0, color: Colors.white),
-                    const SizedBox(height: 8),
-                    Container(width: 150.0, height: 16.0, color: Colors.white),
-                    const SizedBox(height: 4),
-                    Container(width: 100.0, height: 16.0, color: Colors.white),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      );
-    }
-
     if (_bookshopOrders.isEmpty) {
       return const Center(child: Text("There are no orders at this time."));
     }
 
-    return ListView.builder(
+    Widget bodyContent = RefreshIndicator(
+        onRefresh: () async {
+          _loadOrders(isRefresh: true, isSilent: false);
+        },
+        child: ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.all(16.0),
       itemCount: _bookshopOrders.length + (_isLoadMoreLoading ? 1 : 0),
@@ -2604,6 +2587,88 @@ class _HomePageState extends State<HomePage> {
           },
         );
       },
+    ),
+    );
+
+    return Stack(
+      children: [
+        Column(
+          children: [
+            Expanded(
+              child: bodyContent,
+            ),
+            if (_isDownloading)
+              _buildProgressSection(
+                title: "Downloading File... ${(_downloadProgress * 100).toInt()}%",
+                progress: _downloadProgress,
+              ),
+
+            if (_isGsProcessing)
+              _buildProgressSection(
+                title: _totalCopiesProcessing > 1
+                    ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
+                    : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
+                progress: _gsProgress,
+              ),
+          ],
+        ),
+        if (_isDownloading || _isAnimatingPrint)
+          SizedBox(
+            width: double.infinity,
+            height: double.infinity,
+            child: PopScope(
+              canPop: false,
+              child: Center(
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: 300,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 10,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Pilih Animasi sesuai State
+                        if (_isDownloading)
+                          Lottie.asset('assets/animations/downloading_colored.json', width: 150, height: 150, fit: BoxFit.contain)
+                        else
+                          Lottie.asset('assets/animations/printing.json', width: 150, height: 150, fit: BoxFit.contain),
+
+                        // Teks Judul
+                        Text(
+                              _isDownloading ? 'Downloading Files...' : 'Printing in Progress...'
+                          ,
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+
+                        // Teks Subjudul / Peringatan
+                        Text(
+                          _isDownloading
+                              ? 'Downloading Files...'
+                              : 'Printing in Progress...',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -2934,8 +2999,134 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildProgressSection({required String title, required double progress}) {
+    return Column(
+      children: [
+        const Divider(height: 1),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+          color: Colors.white,
+          child: SafeArea(
+            top: false,
+            bottom: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: Colors.black),
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                  value: progress,
+                  backgroundColor: Colors.grey[300],
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMainContent() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final centeredKeypad = Expanded(
+          child: SingleChildScrollView(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: _buildKeypadSection(),
+              ),
+            ),
+          ),
+        );
+        final userHeader = _buildUserInfoHeader();
+        return Column(
+          children: [
+            Expanded(
+              child: constraints.maxWidth > 600
+                  ? Row(children: [
+                Expanded(
+                  flex: 1,
+                  child: Container(
+                    color: hexToColor(buttonBlue),
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20.0),
+                        child:
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 500),
+                          child: _isDownloading
+                              ? Lottie.asset(
+                            'assets/animations/downloading.json',
+                            key: const ValueKey('anim_downloading'),
+                            fit: BoxFit.contain,
+                          )
+                              : _isAnimatingPrint
+                              ? Lottie.asset(
+                            'assets/animations/printing.json',
+                            key: const ValueKey('anim_printing'),
+                            fit: BoxFit.contain,
+                          )
+                              : Image.asset(
+                            'assets/images/printer.jpeg',
+                            key: const ValueKey('img_idle'),
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const VerticalDivider(thickness: 1, width: 1),
+                Expanded(
+                  flex: 1,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      userHeader,
+                      const SizedBox(height: 16),
+                      centeredKeypad,
+                    ],
+                  ),
+                ),
+              ])
+                  : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  userHeader,
+                  const SizedBox(height: 16),
+                  centeredKeypad,
+                ],
+              ),
+            ),
+
+            if (_isDownloading)
+              _buildProgressSection(
+                title: "Downloading File... ${(_downloadProgress * 100).toInt()}%",
+                progress: _downloadProgress,
+              ),
+
+            if (_isGsProcessing)
+              _buildProgressSection(
+                title: _totalCopiesProcessing > 1
+                    ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
+                    : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
+                progress: _gsProgress,
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isSmallScreen = MediaQuery.of(context).size.width <= 600;
     if (_userRole != null &&
         ['shopowner', 'shopmanager', 'cashier', 'coffeshop'].contains(_userRole)) {
       return Scaffold(
@@ -2978,7 +3169,6 @@ class _HomePageState extends State<HomePage> {
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!_isLoading)
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -3055,8 +3245,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
-            if (!_isLoading)
-              const Divider(height: 1, thickness: 1),
+            const Divider(height: 1, thickness: 1),
             Expanded(
               child: _buildBookshopBody(),
             ),
@@ -3097,140 +3286,76 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final centeredKeypad = Expanded(
-            child: SingleChildScrollView(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 400),
-                  child: _buildKeypadSection(),
-                ),
-              ),
-            ),
-          );
-          final userHeader = _buildUserInfoHeader();
-          return Column(
-            children: [
-              Expanded(
-                child: constraints.maxWidth > 600
-                    ? Row(children: [
-                  Expanded(
-                    flex: 1,
-                    child: Container(
-                      color: hexToColor(buttonBlue),
-                      child: Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(20.0),
-                          child:
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 500),
-                            child: _isDownloading
-                                ? Lottie.asset(
-                              'assets/animations/downloading.json',
-                              key: const ValueKey('anim_downloading'),
-                              fit: BoxFit.contain,
-                            )
-                                : _isAnimatingPrint
-                                ? Lottie.asset(
-                              'assets/animations/printing.json',
-                              key: const ValueKey('anim_printing'),
-                              fit: BoxFit.contain,
-                            )
-                                : Image.asset(
-                              'assets/images/printer.jpeg',
-                              key: const ValueKey('img_idle'),
+      body:
+      Stack(
+          children: [
+            _buildMainContent(),
+            if (isSmallScreen && (_isDownloading || _isAnimatingPrint))
+              SizedBox(
+                width: double.infinity,
+                height: double.infinity,
+                child: PopScope(
+                  canPop: false, // Mencegah user menutup proses (kunci tombol back)
+                  child: Center(
+                    child: Material(
+                      color: Colors.transparent,
+                      child: Container(
+                        width: 280, // Ukuran pas untuk layar HP
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 10,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Animasi Lottie bergantian
+                            Lottie.asset(
+                              _isDownloading
+                                  ? 'assets/animations/downloading_colored.json'
+                                  : 'assets/animations/printing.json',
+                              width: 150,
+                              height: 150,
                               fit: BoxFit.contain,
                             ),
-                          ),
+                            const SizedBox(height: 24),
+
+                            // Teks Status
+                            Text(
+                              _isDownloading ? 'Downloading Files...' : 'Printing in Progress...',
+                              style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Teks Peringatan
+                            const Text(
+                              'Please wait, while printing is in progress.',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   ),
-                  const VerticalDivider(thickness: 1, width: 1),
-                  Expanded(
-                    flex: 1,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        userHeader,
-                        const SizedBox(height: 16),
-                        centeredKeypad,
-                      ],
-                    ),
-                  ),
-                ])
-                    : Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    userHeader,
-                    const SizedBox(height: 16),
-                    centeredKeypad,
-                  ],
                 ),
               ),
-
-              if (_isDownloading) ...[
-                const Divider(height: 1),
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                  color: Colors.white,
-                  child: SafeArea(
-                    top: false,
-                    bottom: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          "Downloading File... ${(_downloadProgress * 100).toInt()}%",
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 12, color: Colors.black),
-                        ),
-                        const SizedBox(height: 4),
-                        LinearProgressIndicator(
-                          value: _downloadProgress,
-                          backgroundColor: Colors.grey[300],
-                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-
-              if (_isGsProcessing) ...[
-                const Divider(height: 1),
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                  color: Colors.white,
-                  child: SafeArea(
-                    top: false,
-                    bottom: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          _totalCopiesProcessing > 1
-                              ? "Processing Print Job.. ${(_gsProgress * 100).toInt()}% for copy ${_isSmartCopiesActive ? _totalCopiesProcessing : _currentCopyProcessing}"
-                              : "Processing Print Job... ${(_gsProgress * 100).toInt()}%${_totalJobs > 1 ? ' for #$_currentJobIndex' : ''}",
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 12, color: Colors.black),
-                        ),
-                        const SizedBox(height: 4),
-                        LinearProgressIndicator(
-                          value: _gsProgress,
-                          backgroundColor: Colors.grey[300],
-                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          );
-        },
-      ),
+        ]
+      )
     );
   }
 }

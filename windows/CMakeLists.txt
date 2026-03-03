@@ -2,6 +2,9 @@
 cmake_minimum_required(VERSION 3.14)
 project(hlaprint LANGUAGES CXX)
 
+# Memaksa CMake menggunakan Sentry lokal untuk mempercepat build
+set(FETCHCONTENT_SOURCE_DIR_SENTRY-NATIVE "C:/sentry-cache/sentry-native-0.8.4" CACHE PATH "Gunakan cache lokal untuk sentry-native")
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "hlaprint")

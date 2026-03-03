@@ -50,3 +50,5 @@ windows/.vs/
 windows/build/
 windows/runner/*.ilk
 windows/runner/*.pdb
+
+sentry.properties

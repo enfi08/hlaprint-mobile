@@ -9,6 +9,7 @@ import 'package:hlaprint/screens/login_screen.dart';
 import 'package:hlaprint/services/MyHttpOverrides.dart';
 import 'package:hlaprint/services/auth_service.dart';
 import 'package:hlaprint/utils/migration_helper.dart';
+import 'package:hlaprint/screens/splash_screen.dart';
 import 'package:hlaprint/constants.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -38,6 +39,7 @@ void main() async {
       options.dsn = isStaging ? ''
               : 'https://7022892b4c4313f2acf1b4bd43a0c7a7@o4508279105060864.ingest.de.sentry.io/4510219873812560';
       options.sendDefaultPii = true;
+      options.enableLogs = !isStaging;
       options.enableAppHangTracking = false;
     },
     appRunner: () async {
@@ -69,16 +71,16 @@ void main() async {
       }
 
       runApp(
-        MyApp(initialRoute: initialRoute),
+        MyApp(targetRoute: initialRoute),
       );
     },
   );
 }
 
 class MyApp extends StatelessWidget {
-  final String initialRoute;
+  final String targetRoute;
 
-  const MyApp({super.key, required this.initialRoute});
+  const MyApp({super.key, required this.targetRoute});
 
   @override
   Widget build(BuildContext context) {
@@ -87,11 +89,12 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Hlaprint',
       theme: ThemeData(primarySwatch: Colors.blue),
-      initialRoute: initialRoute,
+      initialRoute: '/',
       builder: (context, child) {
         return UpdateManager(child: child!);
       },
       routes: {
+        '/': (context) => SplashScreen(targetRoute: targetRoute),
         '/login': (context) => LoginScreen(),
         '/home': (context) => HomePage(),
       },
